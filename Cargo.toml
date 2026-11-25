@@ -1,0 +1,15 @@
+[package]
+name = "zwinger"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Confines AI coding-agent sessions with supported OS mechanisms: typed per-session profiles that fail closed"
+repository = "https://github.com/pulseengine/zwinger"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
