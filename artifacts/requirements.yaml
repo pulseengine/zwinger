@@ -1,0 +1,87 @@
+artifacts:
+  - id: REQ-ZW-001
+    type: requirement
+    title: "zwinger fails closed: it never starts a session unconfined"
+    status: approved
+    description: >
+      A missing, unreadable or malformed profile, an unknown key, an empty name, a relative or
+      '..' path, a writable path inside a denied one, a wildcard host, or the absence of an
+      enforcement backend refuses the session with exit 78. Nothing falls back to "allow".
+    fields:
+      origin: "design goal: a session is never unconfined by accident"
+
+  - id: REQ-ZW-002
+    type: requirement
+    title: "One typed per-session profile drives every platform"
+    status: approved
+    description: >
+      A TOML profile (name, write, deny_read, network.allow, mach_lookup) with unknown keys
+      rejected; the same file is enforced on macOS and Linux.
+
+  - id: REQ-ZW-003
+    type: requirement
+    title: "macOS: enforcement through an Endpoint Security descendants client"
+    status: draft
+    description: >
+      Confine the session's process tree with es_new_descendants_client (macOS 27) instead of the
+      deprecated sandbox-exec, covering file, exec and network events of every descendant. Subject
+      to the spike and Apple granting the ES entitlement.
+
+  - id: REQ-ZW-004
+    type: requirement
+    title: "Linux and Pi: enforcement through Landlock and seccomp"
+    status: draft
+    description: >
+      The same profile enforced with Landlock (filesystem, TCP ports) and seccomp, checked on a
+      Raspberry Pi 5 kernel.
+
+  - id: DD-ZW-001
+    type: design-decision
+    title: "A Rust launcher with typed profiles that refuses when unsure"
+    status: approved
+    description: >
+      zwinger replaces the zsh launchers (pe-agent-run) with one Rust binary that parses a typed
+      profile and refuses on any doubt; platform backends plug in behind it.
+    decision: >
+      Profile parsing rejects unknown keys and unsafe values; run refuses until a backend exists.
+    rationale: >
+      Shell launchers make fail-open paths easy to miss; typed parsing and an explicit refusal path
+      make "unconfined by accident" a test failure instead of a silent default.
+    links:
+      - type: satisfies
+        target: REQ-ZW-001
+      - type: satisfies
+        target: REQ-ZW-002
+
+  - id: DD-ZW-002
+    type: design-decision
+    title: "Backends: Endpoint Security descendants on macOS, Landlock + seccomp on Linux"
+    status: proposed
+    description: >
+      macOS uses es_new_descendants_client through a small C bridge (bridge/); Linux uses Landlock
+      and seccomp. Both are supported, documented OS mechanisms, unlike sandbox-exec.
+    decision: >
+      Spike the macOS bridge on a SIP-disabled macOS 27 VM before building it.
+    rationale: >
+      Apple calls the Seatbelt profile language "not API"; ES and Landlock are the supported paths.
+    links:
+      - type: satisfies
+        target: REQ-ZW-003
+      - type: satisfies
+        target: REQ-ZW-004
+
+  - id: VER-ZW-001
+    type: verification
+    title: "Profile and CLI fail-closed tests"
+    status: implemented
+    method: test
+    description: >
+      src/profile.rs tests (missing file, unknown key, missing or blank name, relative and '..'
+      paths, write inside deny_read, wildcard host) and tests/cli.rs (check refuses a missing
+      profile with 78; run never executes the command). Mutation-checked 2026-11-25: removing
+      the wildcard check or letting run execute the command each turns a test red.
+    links:
+      - type: verifies
+        target: REQ-ZW-001
+      - type: verifies
+        target: REQ-ZW-002

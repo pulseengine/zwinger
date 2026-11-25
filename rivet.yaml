@@ -1,0 +1,10 @@
+project:
+  name: zwinger
+  version: "0.0.1"
+  schemas:
+    - common
+    - dev
+
+sources:
+  - path: artifacts
+    format: generic-yaml
