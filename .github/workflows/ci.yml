@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  # every pull request and the merge queue: no paths or branch filter on a workflow that hosts
+  # required checks
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# A new push to a PR cancels that PR's older runs; pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUST_TOOLCHAIN: 1.99.1
+  # rivet v0.41.1, the rivet in the varve layer pinned by varve.toml (2026.11.10).
+  RIVET_REV: 29ca43828c8060af135fcd47ecff4c48662d1567
+  CARGO_MUTANTS_VERSION: 27.0.0
+
+jobs:
+  linux:
+    # The confinement tests (tests/linux.rs) run here against the runner's real kernel: zwinger
+    # applies Landlock and seccomp and execs probes that must be refused. On a kernel without
+    # Landlock ABI 3 they fail, by design.
+    name: Linux confinement (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Fork PRs go to a hosted runner. Routing is not a security boundary; the org's
+          # runner-group policy and fork-PR approval are.
+          - name: self-hosted x64
+            runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && '["self-hosted","linux","x64","rust-cpu"]' || '"ubuntu-24.04"' }}
+          # aarch64: the seccomp syscall table zwinger ships for the Raspberry Pi target.
+          - name: hosted aarch64
+            runs-on: '"ubuntu-24.04-arm"'
+    runs-on: ${{ fromJSON(matrix.runs-on) }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Kernel under test
+        run: |
+          uname -srm
+          cat /sys/kernel/security/lsm 2>/dev/null && echo || echo "(lsm list not readable)"
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests (unit, CLI, end-to-end confinement)
+        run: cargo test --locked --no-fail-fast
+
+      - name: Confine a process and show the refusals
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          work="$(mktemp -d)"
+          secret="$(mktemp -d)"
+          echo secret > "$secret/token"
+          cat > "$work/profile.toml" <<EOF
+          name = "ci-smoke"
+          read = ["/usr", "/etc"$( [ -e /lib64 ] && echo ', "/lib64"' )$( [ -e /lib ] && echo ', "/lib"' )]
+          write = ["$work", "/dev/null"]
+          EOF
+          ./target/debug/zwinger check "$work/profile.toml"
+          ./target/debug/zwinger run "$work/profile.toml" -- /usr/bin/bash -c "
+            touch '$work/inside' && echo 'write inside: ok'
+            if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
+            echo 'read outside: refused'
+          "
+
+  rivet:
+    name: Rivet traceability
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache rivet binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/rivet
+          key: rivet-${{ runner.os }}-${{ runner.arch }}-${{ env.RIVET_REV }}
+
+      # Job-scoped install: never trust a rivet left in $HOME by an earlier job on a persistent
+      # runner.
+      - name: Install rivet (pinned rev, job-scoped)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          ROOT="$RUNNER_TEMP/rivet"
+          if [ ! -x "$ROOT/bin/rivet" ]; then
+            cargo install --locked --git https://github.com/pulseengine/rivet \
+              --rev "$RIVET_REV" --root "$ROOT" --bin rivet rivet-cli
+          fi
+          "$ROOT/bin/rivet" --version | grep -q "^rivet 0.41.1 (${RIVET_REV:0:8}"
+          echo "$ROOT/bin" >> "$GITHUB_PATH"
+
+      - name: Validate artifacts
+        run: rivet validate
+
+      - name: Links have their inverses
+        run: rivet check bidirectional
+
+      # Overall weighted coverage is 89.5% (measured 2026-11-26; 90 fails). Requirement
+      # verification is 6 of 8: REQ-ZW-003 (macOS, waits for the VM) and REQ-ZW-007 (Pi kernel) are drafts with
+      # no verification yet. Raise this as they land.
+      - name: Requirement verification coverage
+        run: rivet coverage --fail-under 89 --strict-empty
+
+  mutants:
+    # The profile parser and the Linux planner (refusals, ABI decisions, seccomp program) with
+    # zero missed mutants. Exclusions and their reasons are in .cargo/mutants.toml.
+    name: cargo mutants (parser + planner)
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: mutants
+
+      - name: Cache cargo-mutants binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-mutants
+          key: cargo-mutants-${{ runner.os }}-${{ runner.arch }}-${{ env.CARGO_MUTANTS_VERSION }}
+
+      - name: Install cargo-mutants (pinned, job-scoped)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          ROOT="$RUNNER_TEMP/cargo-mutants"
+          if [ ! -x "$ROOT/bin/cargo-mutants" ]; then
+            cargo install --locked --root "$ROOT" cargo-mutants --version "$CARGO_MUTANTS_VERSION"
+          fi
+          "$ROOT/bin/cargo-mutants" mutants --version | grep -q "^cargo-mutants $CARGO_MUTANTS_VERSION$"
+          echo "$ROOT/bin" >> "$GITHUB_PATH"
+
+      # Fails on any missed or timed-out mutant; a run that tests nothing is also a failure.
+      - name: Mutate
+        run: |
+          set -o pipefail
+          cargo mutants --no-shuffle -j 2 -f src/profile.rs -f src/linux.rs | tee mutants.log
+          grep -Eq '^[1-9][0-9]* mutants tested' mutants.log
+
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
