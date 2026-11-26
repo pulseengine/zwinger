@@ -1,0 +1,288 @@
+name: Release
+
+# Adapted from pulseengine/synth's release.yml (the org's canonical Track A pipeline): binary
+# archives, CycloneDX SBOM and docs archive inside one SHA256SUMS.txt, SLSA provenance on the
+# archives, the sums signed with cosign keyless. Verify a published release with:
+#
+#   cosign verify-blob \
+#     --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+#     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+#     --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
+#   sha256sum --check --ignore-missing SHA256SUMS.txt
+#   gh attestation verify zwinger-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz --repo pulseengine/zwinger
+#
+# Serialized per tag and never cancelled: a release cancelled mid-publish leaves the release
+# page, attestations and archives inconsistent.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Pull requests that touch the release path build, check and smoke-test both archives, so the
+  # pipeline is exercised before a tag depends on it. Nothing is signed or published for a PR.
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+  # Re-run for a tag whose first run failed partway. The tag must already exist.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build (e.g. v0.1.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.99.1
+  CARGO_CYCLONEDX_VERSION: 0.5.10
+
+jobs:
+  # The tag must name the version the binary will report (pulseengine/varve#38: a release once
+  # shipped a binary reporting the previous version). Checked before anything is built.
+  version-guard:
+    name: Tag matches Cargo.toml version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.compare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Compare
+        id: compare
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          CARGO="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            VERSION="v$CARGO"
+          else
+            VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          fi
+          echo "tag $VERSION, Cargo.toml $CARGO"
+          test "$VERSION" = "v$CARGO"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  # Static musl binaries: zwinger enforces on Linux only (the macOS backend does not exist yet),
+  # and a launcher with no dynamic loader runs on any glibc or musl host, CI runners and the
+  # Raspberry Pi alike. Both are built natively, so each smoke test executes its own tarball.
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [version-guard]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+
+      # Before strip, which would hide what this reads. rustc's musl target links -static-pie,
+      # so the property is "no interpreter and no NEEDED entries", read from the ELF headers.
+      - name: The binary is static (no loader, no shared libraries)
+        env:
+          BIN: target/${{ matrix.target }}/release/zwinger
+        run: |
+          set -euo pipefail
+          readelf -lW "$BIN" | grep -i interpreter && { echo "dynamic loader present"; exit 1; }
+          readelf -dW "$BIN" | grep NEEDED && { echo "shared library dependency present"; exit 1; }
+          echo "static: no PT_INTERP, no DT_NEEDED"
+
+      - name: Strip
+        run: strip "target/${{ matrix.target }}/release/zwinger"
+
+      - name: Package archive
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="zwinger-${VERSION}-${TARGET}.tar.gz"
+          mkdir -p staging
+          cp "target/${TARGET}/release/zwinger" README.md LICENSE staging/
+          tar -czf "$ARCHIVE" -C staging .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      # The packaged binary, not the build output: it reports the tag's version, refuses an
+      # invalid profile with 78, and confines a process on this runner's kernel (write inside
+      # the write tree works, a read outside it is refused).
+      - name: Smoke-test the packaged tarball
+        env:
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p smoke
+          tar -xzf "$ARCHIVE" -C smoke
+          Z=smoke/zwinger
+          test "$("$Z" --version)" = "zwinger ${VERSION#v}"
+          "$Z" --help > /dev/null
+          set +e; "$Z" --no-such-flag 2>/dev/null; rc=$?; set -e
+          test "$rc" = 2
+          set +e; "$Z" check /nonexistent.toml; rc=$?; set -e
+          test "$rc" = 78
+          work="$(mktemp -d)"; secret="$(mktemp -d)"
+          echo secret > "$secret/token"
+          {
+            echo 'name = "release-smoke"'
+            echo 'read = ["/usr", "/etc"]'
+            echo 'read_if_present = ["/lib", "/lib64"]'
+            echo "write = [\"$work\", \"/dev/null\"]"
+          } > "$work/profile.toml"
+          "$Z" run "$work/profile.toml" -- /usr/bin/bash -c "
+            touch '$work/inside' || exit 1
+            if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
+            echo 'write inside: ok; read outside: refused'
+          "
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 7
+
+  create-release:
+    name: Create GitHub Release
+    needs: [version-guard, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      # contents: write uploads the assets; id-token: write is the OIDC token for keyless cosign
+      # and the provenance attestation; attestations: write stores the attestation.
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+
+      - name: Collect archives
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+          test "$(find release-assets -name "*.tar.gz" | wc -l)" = 2
+          ls -la release-assets/
+
+      # Before the sums, so the SBOM's digest is signed with everything else.
+      - name: CycloneDX SBOM
+        env:
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-cyclonedx --version "$CARGO_CYCLONEDX_VERSION"
+          cargo cyclonedx --manifest-path Cargo.toml --format json --spec-version 1.5
+          test -f zwinger.cdx.json
+          cp zwinger.cdx.json "release-assets/zwinger-${VERSION#v}.cdx.json"
+
+      # Before the sums too: a varve layer can only ingest docs whose digest is in the signed sums.
+      - name: Docs archive
+        env:
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          tar -czf "release-assets/zwinger-${VERSION#v}-docs.tar.gz" README.md LICENSE profiles bridge/README.md
+
+      - name: SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          grep -q -- '-docs.tar.gz$' SHA256SUMS.txt
+          grep -q -- '.cdx.json$' SHA256SUMS.txt
+
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "release-assets/*.tar.gz"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign SHA256SUMS (cosign keyless)
+        run: |
+          set -euo pipefail
+          cd release-assets
+          cosign sign-blob --yes \
+            --bundle SHA256SUMS.txt.cosign.bundle \
+            --output-signature SHA256SUMS.txt.sig \
+            --output-certificate SHA256SUMS.txt.pem \
+            SHA256SUMS.txt
+
+      # The signature this job just made must verify under the identity consumers will pin.
+      - name: Verify the signature as a consumer would
+        run: |
+          set -euo pipefail
+          cd release-assets
+          cosign verify-blob \
+            --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Record build environment
+        run: |
+          set -euo pipefail
+          {
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "cosign: $(cosign version 2>&1 | grep -m1 GitVersion || cosign version 2>&1 | head -1)"
+            echo "runner: $(uname -srm)"
+          } > release-assets/build-env.txt
+          cat release-assets/build-env.txt
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" --clobber release-assets/*
+          else
+            gh release create "$VERSION" --title "zwinger $VERSION" --generate-notes \
+              release-assets/*
+          fi

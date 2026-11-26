@@ -120,6 +120,19 @@ artifacts:
       writable, the network unfiltered. Unsubstituted, it fails zwinger check. The runner's home
       is not writable, so a job cannot replace the runner binaries for later jobs.
 
+  - id: REQ-ZW-012
+    type: requirement
+    title: "Releases are signed static Linux binaries a consumer can pin by sha256"
+    status: approved
+    description: >
+      A v* tag whose name matches Cargo.toml publishes static musl archives for x86_64 and
+      aarch64 Linux, a CycloneDX SBOM and a docs archive, all listed in one SHA256SUMS.txt
+      signed with cosign keyless under the release.yml identity, with SLSA build provenance on
+      the archives. Each packaged binary is checked before upload: no dynamic loader or shared
+      library, --version equal to the tag, and it confines a process on the build runner's
+      kernel. The command line follows the pulseengine CLI conventions (--version and -V print
+      "zwinger SEMVER", --help exits 0, an unknown flag or command exits 2).
+
   - id: DD-ZW-001
     type: design-decision
     title: "A Rust launcher with typed profiles that refuses when unsure"
@@ -217,6 +230,43 @@ artifacts:
         target: REQ-ZW-010
       - type: satisfies
         target: REQ-ZW-011
+
+  - id: VER-ZW-004
+    type: verification
+    title: "Release pipeline exercised on pull requests; signature verified as a consumer would"
+    status: implemented
+    method: test
+    description: >
+      .github/workflows/release.yml runs on pull requests that touch the release path: the
+      version guard, both native musl builds, the static-binary check and the packaged-tarball
+      smoke test (version, usage exit 2, refusal exit 78, a confined write inside and a refused
+      read outside). On a tag it also signs the sums and verifies the signature with the
+      identity consumers pin before uploading. tests/cli.rs checks --version, -V, --help and
+      exit 2 for unknown flags and commands.
+    links:
+      - type: verifies
+        target: REQ-ZW-012
+
+  - id: DD-ZW-005
+    type: design-decision
+    title: "Release: synth's signed pipeline, static musl, Linux only for now"
+    status: approved
+    description: >
+      release.yml follows pulseengine/synth's Track A pipeline (sums with SBOM and docs
+      inside, SLSA provenance, cosign keyless) for x86_64 and aarch64 musl, each built natively
+      so its smoke test executes the tarball it uploads.
+    decision: >
+      Ship static musl Linux binaries only; add macOS when its backend exists. The pipeline also
+      runs on pull requests that touch the release path, without signing or publishing.
+    rationale: >
+      A confinement launcher should not depend on the host's dynamic loader or glibc version,
+      and the consumers (CI runner hosts on Ubuntu 24.04, a Raspberry Pi) are Linux. A macOS
+      binary today would only refuse to run. Exercising the pipeline on pull requests means a
+      tag is not its first run. Not covered yet: crates.io and npm distribution (Cargo.toml has
+      publish = false) and inclusion in a varve layer.
+    links:
+      - type: satisfies
+        target: REQ-ZW-012
 
   - id: VER-ZW-001
     type: verification

@@ -52,7 +52,8 @@ fn main() -> ExitCode {
         }
         _ => {
             eprintln!("{USAGE}");
-            ExitCode::from(64)
+            // pulseengine CLI convention: an unknown flag or command exits 2, usage on stderr.
+            ExitCode::from(2)
         }
     }
 }

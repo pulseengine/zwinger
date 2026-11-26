@@ -57,6 +57,19 @@ The session gets `ZWINGER_PROFILE` and `ZWINGER_ABI` in its environment. Below L
 
 Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes outside the granted trees; signals to other processes below ABI 6; device ioctls below ABI 5.
 
+## Releases
+
+Tagged releases publish static Linux binaries (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`), a CycloneDX SBOM and a docs archive. All of them are listed in `SHA256SUMS.txt`, which is signed with cosign keyless; the archives also carry SLSA build provenance. To verify a download and pin it by sha256:
+
+```sh
+cosign verify-blob \
+  --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
+sha256sum --check --ignore-missing SHA256SUMS.txt
+gh attestation verify zwinger-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz --repo pulseengine/zwinger
+```
+
 ## Why
 
 Today's agent sandboxes depend on `sandbox-exec`/Seatbelt, which Apple has deprecated; its profile language "is not considered API". They are also usually started by shell scripts, where a fail-open path is easy to miss. zwinger is a single binary that refuses whenever it isn't sure.
