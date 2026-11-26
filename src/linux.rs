@@ -1325,7 +1325,7 @@ mod proofs {
         for (i, insn) in prog.iter().enumerate() {
             match insn.code {
                 BPF_LD_W_ABS => {
-                    assert!(matches!(insn.k, OFF_NR | OFF_ARCH | OFF_ARG0 | OFF_ARG1))
+                    assert!(matches!(insn.k, OFF_NR | OFF_ARCH | OFF_ARG0 | OFF_ARG1));
                 }
                 BPF_JEQ_K | BPF_JGE_K => {
                     assert!(i + 1 + usize::from(insn.jt) < prog.len());
@@ -1552,7 +1552,9 @@ mod proofs {
             allow_local_binding: false,
         };
         match enforcement(abi, &network) {
-            Err(_) => assert!(abi < MIN_ABI),
+            Err(_) => {
+                assert!(abi < MIN_ABI);
+            }
             Ok(e) => {
                 assert!(abi >= MIN_ABI);
                 assert!(e.abi >= MIN_ABI && e.abi <= MAX_KNOWN_ABI && e.abi <= abi);
