@@ -263,7 +263,8 @@ fn probe_unconfined(what: &str, arg: &str) -> Output {
 }
 
 /// Not a test of its own: when ZWINGER_PROBE is set, perform one syscall and exit with 0 on
-/// success or the errno on failure.
+/// success or the errno on failure. `socket` uses SOCK_DGRAM, which every probed family
+/// (INET, INET6, UNIX, NETLINK) supports; netlink has no SOCK_STREAM.
 #[test]
 fn probe_entry() {
     let Ok(what) = std::env::var("ZWINGER_PROBE") else {
@@ -273,7 +274,7 @@ fn probe_entry() {
     // SAFETY: plain syscalls with valid arguments.
     let rc = unsafe {
         match what.as_str() {
-            "socket" => libc::socket(arg.parse().unwrap(), libc::SOCK_STREAM, 0),
+            "socket" => libc::socket(arg.parse().unwrap(), libc::SOCK_DGRAM, 0),
             "socketpair" => {
                 let mut fds = [0i32; 2];
                 libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
