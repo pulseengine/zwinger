@@ -1,7 +1,8 @@
 //! The per-session profile: what a confined session may read, write, reach and look up.
 //!
-//! Loading fails closed (REQ-ZW-001): a missing or unreadable file, malformed TOML, an unknown
-//! key, an empty name, a relative or `..` path, a contradictory pair of entries, a host that is
+//! Profiles are YAML, read by rivet-yaml, the parser every pulseengine artifact file goes through.
+//! Loading fails closed (REQ-ZW-001): a missing or unreadable file, malformed YAML, an unknown or
+//! duplicate key, a YAML tag, a second document, an empty or null name, a relative or `..` path, a contradictory pair of entries, a host that is
 //! not an exact name or a malformed Mach service name is an error, never a default.
 //!
 //! Path semantics are an allow list with carve-outs: `read` and `write` grant trees, `deny_read`
@@ -134,8 +135,8 @@ impl Profile {
     }
 
     pub fn parse(path: &Path, text: &str) -> Result<Self, ProfileError> {
-        let mut p: Profile =
-            toml::from_str(text).map_err(|e| ProfileError::Parse(path.into(), e.to_string()))?;
+        let mut p: Profile = rivet_yaml::from_str(text)
+            .map_err(|e| ProfileError::Parse(path.into(), e.to_string()))?;
         // Normal form at the boundary: every later comparison (`within`) relies on it.
         for list in [
             &mut p.read,
@@ -183,7 +184,10 @@ impl Profile {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() {
+        // rivet-yaml reads a plain `~` or `null` as that text when the field is a string
+        // (rivet#1354), so a name left null would otherwise load as the name "~".
+        let name = self.name.trim();
+        if name.is_empty() || matches!(name, "~" | "null" | "Null" | "NULL") {
             return Err("name is empty".into());
         }
         for (field, paths) in self.path_fields() {
@@ -257,7 +261,7 @@ mod tests {
     use super::*;
 
     fn parse(t: &str) -> Result<Profile, ProfileError> {
-        Profile::parse(Path::new("t.toml"), t)
+        Profile::parse(Path::new("t.yaml"), t)
     }
 
     fn invalid(t: &str) -> bool {
@@ -265,15 +269,17 @@ mod tests {
     }
 
     const OK: &str = r#"
-name = "demo"
-read = ["/usr", "/Users/me/.ssh/id_ed25519.pub"]
-write = ["/Users/me/git/demo", "/tmp/demo"]
-deny_read = ["/Users/me/.ssh"]
-deny_write = ["/Users/me/git/demo/.claude/settings.json"]
-mach_lookup = ["com.apple.server.bluetooth"]
-[network]
-allow = ["api.anthropic.com", "github.com"]
-allow_local_binding = true
+name: demo
+read: [/usr, /Users/me/.ssh/id_ed25519.pub]
+write:
+  - /Users/me/git/demo
+  - /tmp/demo
+deny_read: [/Users/me/.ssh]
+deny_write: [/Users/me/git/demo/.claude/settings.json]
+mach_lookup: [com.apple.server.bluetooth]
+network:
+  allow: [api.anthropic.com, github.com]
+  allow_local_binding: true
 "#;
 
     // rivet: verifies REQ-ZW-002
@@ -292,7 +298,7 @@ allow_local_binding = true
 
     #[test]
     fn defaults_are_the_closed_ones() {
-        let p = parse("name = \"x\"\n").unwrap();
+        let p = parse("name: \"x\"\n").unwrap();
         assert!(p.read.is_empty() && p.write.is_empty());
         assert!(p.network.allow.is_empty(), "empty allow means no egress");
         assert!(!p.network.allow_local_binding);
@@ -301,7 +307,7 @@ allow_local_binding = true
     #[test]
     fn missing_file_fails_closed() {
         assert!(matches!(
-            Profile::load(Path::new("/nonexistent/zwinger.toml")),
+            Profile::load(Path::new("/nonexistent/zwinger.yaml")),
             Err(ProfileError::Read(..))
         ));
     }
@@ -309,34 +315,75 @@ allow_local_binding = true
     #[test]
     fn unknown_key_fails_closed() {
         assert!(matches!(
-            parse("name = \"x\"\nallow_all = true\n"),
+            parse("name: \"x\"\nallow_all: true\n"),
             Err(ProfileError::Parse(..))
         ));
         assert!(matches!(
-            parse("name = \"x\"\n[network]\nallow = []\nopen = true\n"),
+            parse("name: \"x\"\nnetwork:\n  allow: []\n  open: true\n"),
             Err(ProfileError::Parse(..))
         ));
+    }
+
+    // rivet: verifies REQ-ZW-001
+    #[test]
+    fn yaml_constructs_that_could_change_meaning_fail_closed() {
+        for (why, t) in [
+            ("duplicate key", "name: x\nname: y\n"),
+            (
+                "duplicate nested key",
+                "name: x\nnetwork:\n  mode: none\n  mode: unfiltered\n",
+            ),
+            (
+                "YAML 1.1 yes is not a boolean",
+                "name: x\nnetwork:\n  allow_local_binding: yes\n",
+            ),
+            (
+                "YAML 1.1 on is not a boolean",
+                "name: x\nnetwork:\n  allow_local_binding: on\n",
+            ),
+            ("tag", "name: !!str x\n"),
+            ("second document", "name: x\n---\nname: y\nread: [/]\n"),
+            ("merge key", "name: x\n<<: {read: [/usr]}\n"),
+            ("empty document", ""),
+            ("scalar where a list belongs", "name: x\nread: /usr\n"),
+        ] {
+            assert!(
+                matches!(parse(t), Err(ProfileError::Parse(..))),
+                "{why}: {t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn null_name_fails_closed() {
+        for t in ["name:\n", "name: ~\n", "name: null\n", "name: NULL\n"] {
+            assert!(invalid(t), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn null_paths_fail_closed() {
+        // `~` reads as the text "~", which is not absolute.
+        assert!(invalid("name: x\nread: [~]\n"));
+        assert!(invalid("name: x\nwrite: [null]\n"));
     }
 
     #[test]
     fn wrong_type_fails_closed() {
         assert!(matches!(
-            parse("name = \"x\"\nread = \"/usr\"\n"),
+            parse("name: \"x\"\nread: \"/usr\"\n"),
             Err(ProfileError::Parse(..))
         ));
         assert!(matches!(
-            parse("name = \"x\"\n[network]\nallow_local_binding = \"yes\"\n"),
+            parse("name: \"x\"\nnetwork:\n  allow_local_binding: \"yes\"\n"),
             Err(ProfileError::Parse(..))
         ));
     }
 
     #[test]
     fn missing_name_fails_closed() {
-        assert!(matches!(
-            parse("write = []\n"),
-            Err(ProfileError::Parse(..))
-        ));
-        assert!(invalid("name = \" \"\n"));
+        assert!(matches!(parse("write: []\n"), Err(ProfileError::Parse(..))));
+        assert!(invalid("name: \" \"\n"));
     }
 
     #[test]
@@ -350,7 +397,7 @@ allow_local_binding = true
             "deny_write",
         ] {
             assert!(
-                invalid(&format!("name = \"x\"\n{field} = [\"repo\"]\n")),
+                invalid(&format!("name: \"x\"\n{field}: [\"repo\"]\n")),
                 "{field}"
             );
         }
@@ -367,7 +414,7 @@ allow_local_binding = true
             "deny_write",
         ] {
             assert!(
-                invalid(&format!("name = \"x\"\n{field} = [\"/repo/../etc\"]\n")),
+                invalid(&format!("name: \"x\"\n{field}: [\"/repo/../etc\"]\n")),
                 "{field}"
             );
         }
@@ -376,38 +423,40 @@ allow_local_binding = true
     #[test]
     fn write_inside_deny_read_fails_closed() {
         assert!(invalid(
-            "name = \"x\"\nwrite = [\"/Users/me/.ssh/x\"]\ndeny_read = [\"/Users/me/.ssh\"]\n"
+            "name: \"x\"\nwrite: [\"/Users/me/.ssh/x\"]\ndeny_read: [\"/Users/me/.ssh\"]\n"
         ));
         assert!(invalid(
-            "name = \"x\"\nwrite = [\"/Users/me/.ssh\"]\ndeny_read = [\"/Users/me/.ssh\"]\n"
+            "name: \"x\"\nwrite: [\"/Users/me/.ssh\"]\ndeny_read: [\"/Users/me/.ssh\"]\n"
         ));
     }
 
     #[test]
     fn write_inside_deny_write_fails_closed() {
         assert!(invalid(
-            "name = \"x\"\nwrite = [\"/r/.claude/x\"]\ndeny_write = [\"/r/.claude\"]\n"
+            "name: \"x\"\nwrite: [\"/r/.claude/x\"]\ndeny_write: [\"/r/.claude\"]\n"
         ));
     }
 
     #[test]
     fn deny_write_inside_write_is_a_carve_out() {
-        assert!(parse("name = \"x\"\nwrite = [\"/r\"]\ndeny_write = [\"/r/.claude\"]\n").is_ok());
+        assert!(parse("name: \"x\"\nwrite: [\"/r\"]\ndeny_write: [\"/r/.claude\"]\n").is_ok());
     }
 
     #[test]
     fn read_equal_to_deny_read_fails_closed() {
         assert!(invalid(
-            "name = \"x\"\nread = [\"/Users/me/.ssh\"]\ndeny_read = [\"/Users/me/.ssh\"]\n"
+            "name: \"x\"\nread: [\"/Users/me/.ssh\"]\ndeny_read: [\"/Users/me/.ssh\"]\n"
         ));
     }
 
     #[test]
     fn read_inside_deny_read_is_an_exception() {
-        assert!(parse(
-            "name = \"x\"\nread = [\"/Users/me/.ssh/k.pub\"]\ndeny_read = [\"/Users/me/.ssh\"]\n"
-        )
-        .is_ok());
+        assert!(
+            parse(
+                "name: \"x\"\nread: [\"/Users/me/.ssh/k.pub\"]\ndeny_read: [\"/Users/me/.ssh\"]\n"
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -420,7 +469,7 @@ allow_local_binding = true
             "git hub.com",
         ] {
             assert!(
-                invalid(&format!("name = \"x\"\n[network]\nallow = [{h:?}]\n")),
+                invalid(&format!("name: \"x\"\nnetwork:\n  allow: [{h:?}]\n")),
                 "{h:?}"
             );
         }
@@ -430,7 +479,7 @@ allow_local_binding = true
     fn non_exact_mach_services_fail_closed() {
         for m in ["", "com.apple.*", "com.apple. x"] {
             assert!(
-                invalid(&format!("name = \"x\"\nmach_lookup = [{m:?}]\n")),
+                invalid(&format!("name: \"x\"\nmach_lookup: [{m:?}]\n")),
                 "{m:?}"
             );
         }
@@ -438,28 +487,28 @@ allow_local_binding = true
 
     #[test]
     fn refusals_name_the_file_and_the_reason() {
-        let read = Profile::load(Path::new("/nonexistent/z.toml"))
+        let read = Profile::load(Path::new("/nonexistent/z.yaml"))
             .unwrap_err()
             .to_string();
         assert!(
-            read.starts_with("/nonexistent/z.toml: cannot read profile: "),
+            read.starts_with("/nonexistent/z.yaml: cannot read profile: "),
             "{read}"
         );
-        let p = parse("name = 1\n").unwrap_err().to_string();
-        assert!(p.starts_with("t.toml: not a valid profile: "), "{p}");
-        let i = parse("name = \"x\"\nwrite = [\"repo\"]\n")
+        let p = parse("name: x\nread: /usr\n").unwrap_err().to_string();
+        assert!(p.starts_with("t.yaml: not a valid profile: "), "{p}");
+        let i = parse("name: \"x\"\nwrite: [\"repo\"]\n")
             .unwrap_err()
             .to_string();
-        assert_eq!(i, "t.toml: write: repo is not absolute");
+        assert_eq!(i, "t.yaml: write: repo is not absolute");
     }
     // rivet: verifies REQ-ZW-009
     #[test]
     fn network_modes_parse_and_default_to_none() {
-        let p = parse("name = \"x\"\n").unwrap();
+        let p = parse("name: \"x\"\n").unwrap();
         assert_eq!(p.network.mode, NetworkMode::None);
         assert_eq!(p.network.unix_sockets, UnixSockets::Confined);
         let p = parse(
-            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nunix_sockets = \"unfiltered\"\n",
+            "name: \"x\"\nnetwork:\n  mode: \"unfiltered\"\n  unix_sockets: \"unfiltered\"\n",
         )
         .unwrap();
         assert_eq!(p.network.mode, NetworkMode::Unfiltered);
@@ -470,15 +519,15 @@ allow_local_binding = true
     #[test]
     fn unknown_network_values_fail_closed() {
         for body in [
-            "mode = \"ports\"",
-            "mode = \"all\"",
-            "mode = \"Unfiltered\"",
-            "unix_sockets = \"any\"",
-            "mode = true",
+            "mode: \"ports\"",
+            "mode: \"all\"",
+            "mode: \"Unfiltered\"",
+            "unix_sockets: \"any\"",
+            "mode: true",
         ] {
             assert!(
                 matches!(
-                    parse(&format!("name = \"x\"\n[network]\n{body}\n")),
+                    parse(&format!("name: \"x\"\nnetwork:\n  {body}\n")),
                     Err(ProfileError::Parse(..))
                 ),
                 "{body}"
@@ -490,25 +539,25 @@ allow_local_binding = true
     #[test]
     fn unfiltered_with_host_or_binding_allowances_fails_closed() {
         assert!(invalid(
-            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nallow = [\"github.com\"]\n"
+            "name: \"x\"\nnetwork:\n  mode: \"unfiltered\"\n  allow: [\"github.com\"]\n"
         ));
         assert!(invalid(
-            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nallow_local_binding = true\n"
+            "name: \"x\"\nnetwork:\n  mode: \"unfiltered\"\n  allow_local_binding: true\n"
         ));
     }
 
     #[test]
     fn if_present_grants_follow_the_same_contradiction_rules() {
         assert!(invalid(
-            "name = \"x\"\nwrite_if_present = [\"/s/x\"]\ndeny_read = [\"/s\"]\n"
+            "name: \"x\"\nwrite_if_present: [\"/s/x\"]\ndeny_read: [\"/s\"]\n"
         ));
         assert!(invalid(
-            "name = \"x\"\nwrite_if_present = [\"/r/.c/x\"]\ndeny_write = [\"/r/.c\"]\n"
+            "name: \"x\"\nwrite_if_present: [\"/r/.c/x\"]\ndeny_write: [\"/r/.c\"]\n"
         ));
         assert!(invalid(
-            "name = \"x\"\nread_if_present = [\"/s\"]\ndeny_read = [\"/s\"]\n"
+            "name: \"x\"\nread_if_present: [\"/s\"]\ndeny_read: [\"/s\"]\n"
         ));
-        let e = parse("name = \"x\"\nwrite_if_present = [\"/s/x\"]\ndeny_read = [\"/s\"]\n")
+        let e = parse("name: \"x\"\nwrite_if_present: [\"/s/x\"]\ndeny_read: [\"/s\"]\n")
             .unwrap_err()
             .to_string();
         assert!(

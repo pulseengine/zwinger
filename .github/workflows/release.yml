@@ -145,17 +145,17 @@ jobs:
           "$Z" --help > /dev/null
           set +e; "$Z" --no-such-flag 2>/dev/null; rc=$?; set -e
           test "$rc" = 2
-          set +e; "$Z" check /nonexistent.toml; rc=$?; set -e
+          set +e; "$Z" check /nonexistent.yaml; rc=$?; set -e
           test "$rc" = 78
           work="$(mktemp -d)"; secret="$(mktemp -d)"
           echo secret > "$secret/token"
           {
-            echo 'name = "release-smoke"'
-            echo 'read = ["/usr", "/etc"]'
-            echo 'read_if_present = ["/lib", "/lib64"]'
-            echo "write = [\"$work\", \"/dev/null\"]"
-          } > "$work/profile.toml"
-          "$Z" run "$work/profile.toml" -- /usr/bin/bash -c "
+            echo 'name: release-smoke'
+            echo 'read: ["/usr", "/etc"]'
+            echo 'read_if_present: ["/lib", "/lib64"]'
+            echo "write: [\"$work\", \"/dev/null\"]"
+          } > "$work/profile.yaml"
+          "$Z" run "$work/profile.yaml" -- /usr/bin/bash -c "
             touch '$work/inside' || exit 1
             if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
             echo 'write inside: ok; read outside: refused'

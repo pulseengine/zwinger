@@ -79,13 +79,13 @@ jobs:
           work="$(mktemp -d)"
           secret="$(mktemp -d)"
           echo secret > "$secret/token"
-          cat > "$work/profile.toml" <<EOF
-          name = "ci-smoke"
-          read = ["/usr", "/etc"$( [ -e /lib64 ] && echo ', "/lib64"' )$( [ -e /lib ] && echo ', "/lib"' )]
-          write = ["$work", "/dev/null"]
+          cat > "$work/profile.yaml" <<EOF
+          name: ci-smoke
+          read: ["/usr", "/etc"$( [ -e /lib64 ] && echo ', "/lib64"' )$( [ -e /lib ] && echo ', "/lib"' )]
+          write: ["$work", "/dev/null"]
           EOF
-          ./target/debug/zwinger check "$work/profile.toml"
-          ./target/debug/zwinger run "$work/profile.toml" -- /usr/bin/bash -c "
+          ./target/debug/zwinger check "$work/profile.yaml"
+          ./target/debug/zwinger run "$work/profile.yaml" -- /usr/bin/bash -c "
             touch '$work/inside' && echo 'write inside: ok'
             if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
             echo 'read outside: refused'

@@ -4,7 +4,7 @@ artifacts:
     title: "zwinger fails closed: it never starts a session unconfined"
     status: approved
     description: >
-      A missing, unreadable or malformed profile, an unknown key, an empty name, a relative or
+      A missing, unreadable or malformed profile, an unknown or duplicate key, an empty or null name, a relative or
       '..' path, a contradictory pair of path entries, a host that is not an exact name, a
       malformed Mach service name, a profile the platform backend cannot enforce as written, or
       the absence of an enforcement backend refuses the session with exit 78. Nothing falls back
@@ -17,8 +17,8 @@ artifacts:
     title: "One typed per-session profile drives every platform"
     status: approved
     description: >
-      A TOML profile (name, read, write, deny_read, deny_write, network.allow,
-      network.allow_local_binding, mach_lookup) with unknown keys and wrong types rejected and
+      A YAML profile, read by rivet-yaml (name, read, write, deny_read, deny_write, network.allow,
+      network.allow_local_binding, mach_lookup) with unknown or duplicate keys and wrong types rejected and
       every field refusable; the same file is enforced on macOS and Linux. The fields follow what
       the sandbox profiles in use today express: read and write allow lists, denied paths inside
       them, an egress host list, loopback binding and Mach lookups.
@@ -115,7 +115,7 @@ artifacts:
     title: "A template profile confines a self-hosted GitHub Actions runner"
     status: approved
     description: >
-      profiles/github-runner.toml confines a runner's paths with {{home}} as its only
+      profiles/github-runner.yaml confines a runner's paths with {{home}} as its only
       placeholder: system trees and the home read-only, work, temp, log and cache directories
       writable, the network unfiltered. Unsubstituted, it fails zwinger check. The runner's home
       is not writable, so a job cannot replace the runner binaries for later jobs.
@@ -270,6 +270,29 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-ZW-012
+
+  - id: DD-ZW-006
+    type: design-decision
+    title: "Profiles are YAML, read by rivet-yaml"
+    status: approved
+    description: >
+      Profile files are YAML, parsed with rivet-yaml (pinned by rivet release tag; Cargo.lock
+      pins the commit), the parser that reads every rivet artifact file in the org.
+    decision: >
+      Use YAML and rivet-yaml for profiles instead of TOML. Constructs that could change a
+      profile's meaning are refused: duplicate keys, tags, multiple documents, merge keys, and
+      YAML 1.1 booleans (yes/on read as strings and fail against bool). A null name, which
+      rivet-yaml reads as the text "~" (rivet#1354), is refused by validation.
+    rationale: >
+      One configuration format and one parser across pulseengine, matching rivet's artifacts.
+      rivet-yaml is checked against the yaml-test-suite with zero cases read silently wrong,
+      and it refuses what it cannot represent instead of guessing. It is not on crates.io yet,
+      so zwinger cannot be published to crates.io until it is.
+    links:
+      - type: satisfies
+        target: REQ-ZW-002
+      - type: satisfies
+        target: REQ-ZW-001
 
   - id: VER-ZW-005
     type: verification
