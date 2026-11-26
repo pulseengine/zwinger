@@ -51,7 +51,7 @@ artifacts:
       network.mode = "none" (the default) means no egress: a seccomp filter fails socket(2) with
       EACCES for every family except AF_UNIX and fails io_uring with EPERM; where the ABI has them, Landlock
       also denies TCP (ABI 4) and UDP (ABI 10). A foreign syscall ABI (i386 on x86_64) kills the
-      process and x32 calls fail. A non-empty network.allow or allow_local_binding = true is
+      process and x32 calls fail with EPERM. A non-empty network.allow or allow_local_binding = true is
       refused, because Landlock filters ports, not hosts or addresses, and the backend has no
       filtering proxy.
 
@@ -189,7 +189,10 @@ artifacts:
       channel, which is a fail-open path. A hand-written filter keeps the whole program
       reviewable and testable without a kernel. Known gaps that remain, stated here so they are
       not mistaken for coverage: Landlock does not restrict chmod, chown, utime or xattr changes
-      on paths outside the granted trees; below ABI 6 signals to processes outside the session
+      on paths outside the granted trees; the syscall numbers and constants in src/linux.rs are
+      shared by the program and its Kani spec, so the proofs cannot catch a wrong number (they
+      were checked against the Linux UAPI headers in review, and tests/linux.rs runs the filter
+      in real kernels); below ABI 6 signals to processes outside the session
       are not scoped; below ABI 5 device ioctls are not restricted; host-level egress filtering
       needs a proxy that does not exist yet; paths are checked and then opened in two steps,
       which only a process already unconfined as the same user could race. The terminal
@@ -267,6 +270,35 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-ZW-012
+
+  - id: VER-ZW-005
+    type: verification
+    title: "Kani proofs: seccomp program, profile-to-verdict, enforcement decisions"
+    status: implemented
+    method: analysis
+    description: >
+      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 19 harnesses over the shipped
+      code in src/linux.rs mod proofs. For x86_64 and aarch64 in all four socket modes, the
+      seccomp program is well formed (every instruction in the emitted subset, every jump inside
+      the program, a ret last) and its verdict equals seccomp_spec for every 32-bit audit_arch,
+      nr, args[0] and args[1]. From any kernel ABI >= 3 and any network and UNIX-socket mode,
+      the filter's verdict on socket(2) is the one the requirement text states. For every i32
+      ABI, enforcement() refuses below 3, allows network sockets only under mode unfiltered and
+      AF_UNIX only when Landlock confines it or the profile opts out, and never requests a
+      Landlock right the ABI lacks. Inputs are symbolic over their full range; loop unwinding is
+      bounded at 30 with unwinding assertions on. Eight planted-bug controls (TIOCSTI, TIOCLINUX,
+      x32, io_uring, EPERM to allow, EACCES to allow, the arch check, the AF_UNIX test) must each
+      fail (should_panic). cover! statements show every verdict is reachable. Trusted base:
+      bpf_run (this repository's classic-BPF model; the kernel interpreter is checked by
+      tests/linux.rs), the shared syscall constants, and Kani/CBMC. The spec was reviewed against
+      REQ-ZW-005/006/009 by a separate reviewer before it was relied on.
+    links:
+      - type: verifies
+        target: REQ-ZW-005
+      - type: verifies
+        target: REQ-ZW-006
+      - type: verifies
+        target: REQ-ZW-009
 
   - id: VER-ZW-001
     type: verification

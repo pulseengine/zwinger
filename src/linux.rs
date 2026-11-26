@@ -133,21 +133,41 @@ impl Enforcement {
     }
 }
 
+/// Why a kernel's Landlock cannot carry a profile. A plain enum, so the decision stays cheap to
+/// reason about (the Kani proof covers every ABI); the text is rendered by `Display`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiRefusal {
+    /// Landlock is not built in or not enabled.
+    Unavailable,
+    /// Landlock is there, below `MIN_ABI`.
+    TooOld(i32),
+}
+
+impl std::fmt::Display for AbiRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AbiRefusal::Unavailable => write!(
+                f,
+                "Landlock is not available on this kernel (not built in or not enabled in the \
+                 lsm= list); refusing to run unconfined"
+            ),
+            AbiRefusal::TooOld(abi) => write!(
+                f,
+                "Landlock ABI {abi} cannot restrict truncate(2); ABI {MIN_ABI} (Linux 6.2) is the \
+                 minimum; refusing to run partially confined"
+            ),
+        }
+    }
+}
+
 /// Decide what to enforce for `network` on a kernel reporting Landlock ABI `abi` (<= 0:
 /// unavailable).
-pub fn enforcement(abi: i32, network: &Network) -> Result<Enforcement, String> {
+pub fn enforcement(abi: i32, network: &Network) -> Result<Enforcement, AbiRefusal> {
     if abi <= 0 {
-        return Err(
-            "Landlock is not available on this kernel (not built in or not enabled \
-                    in the lsm= list); refusing to run unconfined"
-                .into(),
-        );
+        return Err(AbiRefusal::Unavailable);
     }
     if abi < MIN_ABI {
-        return Err(format!(
-            "Landlock ABI {abi} cannot restrict truncate(2); ABI {MIN_ABI} (Linux 6.2) is the \
-             minimum; refusing to run partially confined"
-        ));
+        return Err(AbiRefusal::TooOld(abi));
     }
     let abi = abi.min(MAX_KNOWN_ABI);
     let none = network.mode == NetworkMode::None;
@@ -406,115 +426,211 @@ pub fn native_arch() -> Option<Arch> {
     }
 }
 
-/// Jump targets in `seccomp_program`; resolved to forward offsets once the layout is known.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Label {
-    Deny,
-    Socket,
-    Ioctl,
+/// Upper bound on the program length (x86_64 with AF_UNIX allowed and the network refused).
+pub const MAX_PROGRAM: usize = 20;
+
+/// A seccomp program in a fixed array, so building it allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Program {
+    insns: [Insn; MAX_PROGRAM],
+    len: usize,
+}
+
+impl Program {
+    pub fn as_slice(&self) -> &[Insn] {
+        &self.insns[..self.len]
+    }
+
+    /// For the planted-bug controls in the Kani proofs only.
+    #[cfg(kani)]
+    pub fn as_mut_slice(&mut self) -> &mut [Insn] {
+        &mut self.insns[..self.len]
+    }
+
+    fn push(&mut self, insn: Insn) {
+        self.insns[self.len] = insn;
+        self.len += 1;
+    }
+}
+
+const fn ld(k: u32) -> Insn {
+    Insn {
+        code: BPF_LD_W_ABS,
+        jt: 0,
+        jf: 0,
+        k,
+    }
+}
+
+const fn ret(k: u32) -> Insn {
+    Insn {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k,
+    }
 }
 
 /// The seccomp program: kill a foreign architecture, refuse x32, io_uring and the terminal
 /// ioctls TIOCSTI and TIOCLINUX with EPERM. `socket(2)` with family `AF_UNIX` is allowed when
 /// `unix_sockets` holds, any other family when `inet_sockets` holds; the rest fail with EACCES.
-pub fn seccomp_program(arch: Arch, unix_sockets: bool, inet_sockets: bool) -> Vec<Insn> {
-    enum Op {
-        Ld(u32),
-        Ret(u32),
-        Jump(u16, u32, Label),
-        Mark(Label),
-        /// Jump over the next `n` instructions when the condition holds.
-        Skip(u16, u32, u8),
-    }
-    use Label::*;
-    let mut ops = vec![
-        Op::Ld(OFF_ARCH),
-        Op::Skip(BPF_JEQ_K, arch.audit_arch, 1),
-        Op::Ret(RET_KILL_PROCESS),
-        Op::Ld(OFF_NR),
-    ];
-    if let Some(from) = arch.foreign_from {
-        ops.push(Op::Jump(BPF_JGE_K, from, Deny));
-    }
-    ops.push(Op::Jump(BPF_JEQ_K, arch.socket, Socket));
-    ops.push(Op::Jump(BPF_JEQ_K, arch.ioctl, Ioctl));
-    for nr in arch.io_uring {
-        ops.push(Op::Jump(BPF_JEQ_K, nr, Deny));
-    }
-    ops.push(Op::Ret(RET_ALLOW));
-    ops.push(Op::Mark(Socket));
-    match (unix_sockets, inet_sockets) {
-        (true, true) => ops.push(Op::Ret(RET_ALLOW)),
-        (false, false) => ops.push(Op::Ret(RET_ERRNO | EACCES)),
-        (true, false) => {
-            ops.push(Op::Ld(OFF_ARG0));
-            ops.push(Op::Skip(BPF_JEQ_K, AF_UNIX, 1));
-            ops.push(Op::Ret(RET_ERRNO | EACCES));
-            ops.push(Op::Ret(RET_ALLOW));
-        }
-        (false, true) => {
-            ops.push(Op::Ld(OFF_ARG0));
-            ops.push(Op::Skip(BPF_JEQ_K, AF_UNIX, 1));
-            ops.push(Op::Ret(RET_ALLOW));
-            ops.push(Op::Ret(RET_ERRNO | EACCES));
-        }
-    }
-    ops.push(Op::Mark(Ioctl));
-    ops.push(Op::Ld(OFF_ARG1));
-    ops.push(Op::Jump(BPF_JEQ_K, TIOCSTI, Deny));
-    ops.push(Op::Jump(BPF_JEQ_K, TIOCLINUX, Deny));
-    ops.push(Op::Ret(RET_ALLOW));
-    ops.push(Op::Mark(Deny));
-    ops.push(Op::Ret(RET_ERRNO | EPERM));
+///
+/// Layout, block by block (jumps only go forward, so every target is computed from it):
+///
+/// ```text
+/// head    ld arch; jeq ARCH +1; ret KILL; ld nr
+/// checks  [jge X32 -> deny]; jeq socket -> sock; jeq ioctl -> ioctl; jeq io_uring x3 -> deny
+/// allow   ret ALLOW
+/// sock    one ret (both or neither family allowed), or ld arg0; jeq AF_UNIX +1; ret; ret
+/// ioctl   ld arg1; jeq TIOCSTI -> deny; jeq TIOCLINUX -> deny; ret ALLOW
+/// deny    ret EPERM
+/// ```
+pub fn seccomp_program(arch: Arch, unix_sockets: bool, inet_sockets: bool) -> Program {
+    let n_checks = usize::from(arch.foreign_from.is_some()) + 2 + arch.io_uring.len();
+    let first_check = 4;
+    let allow_at = first_check + n_checks;
+    let sock_at = allow_at + 1;
+    let sock_len = if unix_sockets == inet_sockets { 1 } else { 4 };
+    let ioctl_at = sock_at + sock_len;
+    let deny_at = ioctl_at + 4;
 
-    // Resolve labels. BPF jumps only go forward, so a label may be marked more than once and a
-    // jump goes to the nearest mark after it.
-    let mut at = Vec::new();
-    let mut n = 0usize;
-    for op in &ops {
-        match op {
-            Op::Mark(l) => at.push((*l, n)),
-            _ => n += 1,
+    let mut p = Program {
+        insns: [ret(0); MAX_PROGRAM],
+        len: 0,
+    };
+    let jump = |code, k, from: usize, to: usize| Insn {
+        code,
+        jt: u8::try_from(to - from - 1).expect("short program"),
+        jf: 0,
+        k,
+    };
+    p.push(ld(OFF_ARCH));
+    p.push(Insn {
+        code: BPF_JEQ_K,
+        jt: 1,
+        jf: 0,
+        k: arch.audit_arch,
+    });
+    p.push(ret(RET_KILL_PROCESS));
+    p.push(ld(OFF_NR));
+    if let Some(from) = arch.foreign_from {
+        p.push(jump(BPF_JGE_K, from, p.len, deny_at));
+    }
+    p.push(jump(BPF_JEQ_K, arch.socket, p.len, sock_at));
+    p.push(jump(BPF_JEQ_K, arch.ioctl, p.len, ioctl_at));
+    for nr in arch.io_uring {
+        p.push(jump(BPF_JEQ_K, nr, p.len, deny_at));
+    }
+    p.push(ret(RET_ALLOW));
+    match (unix_sockets, inet_sockets) {
+        (true, true) => p.push(ret(RET_ALLOW)),
+        (false, false) => p.push(ret(RET_ERRNO | EACCES)),
+        (unix, _) => {
+            // Exactly one family class is allowed: AF_UNIX falls through to the first `ret`.
+            let (unix_ret, other_ret) = if unix {
+                (RET_ALLOW, RET_ERRNO | EACCES)
+            } else {
+                (RET_ERRNO | EACCES, RET_ALLOW)
+            };
+            p.push(ld(OFF_ARG0));
+            p.push(Insn {
+                code: BPF_JEQ_K,
+                jt: 0,
+                jf: 1,
+                k: AF_UNIX,
+            });
+            p.push(ret(unix_ret));
+            p.push(ret(other_ret));
         }
     }
-    let index = |l: Label, from: usize| -> usize {
-        at.iter()
-            .filter(|(m, i)| *m == l && *i > from)
-            .map(|&(_, i)| i)
-            .min()
-            .expect("forward label")
-    };
-    let mut prog = Vec::with_capacity(n);
-    for op in &ops {
-        let i = prog.len();
-        let insn = match *op {
-            Op::Mark(_) => continue,
-            Op::Skip(code, k, n) => Insn {
-                code,
-                jt: n,
-                jf: 0,
-                k,
-            },
-            Op::Ld(k) => Insn {
-                code: BPF_LD_W_ABS,
-                jt: 0,
-                jf: 0,
-                k,
-            },
-            Op::Ret(k) => Insn {
-                code: BPF_RET_K,
-                jt: 0,
-                jf: 0,
-                k,
-            },
-            Op::Jump(code, k, l) => {
-                let jt = u8::try_from(index(l, i) - i - 1).expect("short program");
-                Insn { code, jt, jf: 0, k }
+    p.push(ld(OFF_ARG1));
+    p.push(jump(BPF_JEQ_K, TIOCSTI, p.len, deny_at));
+    p.push(jump(BPF_JEQ_K, TIOCLINUX, p.len, deny_at));
+    p.push(ret(RET_ALLOW));
+    p.push(ret(RET_ERRNO | EPERM));
+    debug_assert_eq!(p.len, deny_at + 1);
+    p
+}
+
+/// A classic-BPF interpreter for the subset `seccomp_program` emits, over one `seccomp_data`.
+/// It is the semantics the unit tests and the Kani proofs judge the program by; the kernel's own
+/// interpreter is the external check (tests/linux.rs runs the program in real kernels). Panics on
+/// an instruction outside the subset or a jump past the end, both of which the proofs rule out.
+#[cfg(any(test, kani))]
+pub(crate) fn bpf_run(prog: &[Insn], arch: u32, nr: u32, arg0: u32, arg1: u32) -> u32 {
+    // Classic BPF only jumps forward (jt and jf are unsigned offsets), so walking the program in
+    // order and executing only the instruction at `next` is the same semantics, with a concrete
+    // loop index (which keeps the Kani proof tractable).
+    let (mut next, mut acc) = (0usize, 0u32);
+    for (pc, i) in prog.iter().enumerate() {
+        if pc != next {
+            continue;
+        }
+        next = pc + 1;
+        match i.code {
+            BPF_LD_W_ABS => {
+                acc = match i.k {
+                    OFF_NR => nr,
+                    OFF_ARCH => arch,
+                    OFF_ARG0 => arg0,
+                    OFF_ARG1 => arg1,
+                    k => panic!("load from {k}"),
+                }
             }
-        };
-        prog.push(insn);
+            BPF_JEQ_K => next += usize::from(if acc == i.k { i.jt } else { i.jf }),
+            BPF_JGE_K => next += usize::from(if acc >= i.k { i.jt } else { i.jf }),
+            BPF_RET_K => return i.k,
+            c => panic!("opcode {c:#x}"),
+        }
     }
-    prog
+    panic!("ran past the end of the program")
+}
+
+/// The filter's required verdict for one syscall, stated from REQ-ZW-005 and REQ-ZW-006 without
+/// reference to how `seccomp_program` lays out its instructions:
+/// - a foreign audit architecture is killed;
+/// - a second syscall ABI on the same architecture (x32) fails with EPERM;
+/// - io_uring_setup, io_uring_enter and io_uring_register fail with EPERM;
+/// - ioctl with request TIOCSTI or TIOCLINUX (low 32 bits) fails with EPERM, any fd;
+/// - socket(AF_UNIX, ..) is allowed iff `unix_sockets`, any other family iff `inet_sockets`,
+///   otherwise it fails with EACCES;
+/// - every other syscall is allowed (Landlock, not seccomp, governs it).
+#[cfg(any(test, kani))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seccomp_spec(
+    arch: Arch,
+    unix_sockets: bool,
+    inet_sockets: bool,
+    audit_arch: u32,
+    nr: u32,
+    arg0: u32,
+    arg1: u32,
+) -> u32 {
+    if audit_arch != arch.audit_arch {
+        return RET_KILL_PROCESS;
+    }
+    if arch.foreign_from.is_some_and(|from| nr >= from) {
+        return RET_ERRNO | EPERM;
+    }
+    if arch.io_uring.contains(&nr) {
+        return RET_ERRNO | EPERM;
+    }
+    if nr == arch.ioctl && (arg1 == TIOCSTI || arg1 == TIOCLINUX) {
+        return RET_ERRNO | EPERM;
+    }
+    if nr == arch.socket {
+        let allowed = if arg0 == AF_UNIX {
+            unix_sockets
+        } else {
+            inet_sockets
+        };
+        return if allowed {
+            RET_ALLOW
+        } else {
+            RET_ERRNO | EACCES
+        };
+    }
+    RET_ALLOW
 }
 
 /// Confine the calling process to `profile`. On success every later `exec` runs confined.
@@ -528,7 +644,7 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
 
     let plan = plan(profile)?;
     let arch = native_arch().ok_or("no seccomp syscall table for this architecture; refusing")?;
-    let enf = enforcement(kernel_abi(), &profile.network)?;
+    let enf = enforcement(kernel_abi(), &profile.network).map_err(|e| e.to_string())?;
     let abi = ABI::from(enf.abi);
     let err = |e: landlock::RulesetError| format!("Landlock: {e}; refusing");
 
@@ -600,7 +716,8 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         }
         let mut filter: Vec<libc::sock_filter> =
             seccomp_program(arch, enf.unix_sockets, enf.inet_sockets)
-                .into_iter()
+                .as_slice()
+                .iter()
                 .map(|i| libc::sock_filter {
                     code: i.code,
                     jt: i.jt,
@@ -665,6 +782,24 @@ mod tests {
             assert!(enforcement(abi, &Network::default()).is_err(), "abi {abi}");
         }
         assert!(enforcement(MIN_ABI, &Network::default()).is_ok());
+    }
+
+    #[test]
+    fn abi_refusals_say_why() {
+        let none = Network::default();
+        assert_eq!(enforcement(0, &none), Err(AbiRefusal::Unavailable));
+        assert_eq!(enforcement(-5, &none), Err(AbiRefusal::Unavailable));
+        assert_eq!(enforcement(2, &none), Err(AbiRefusal::TooOld(2)));
+        assert!(
+            AbiRefusal::Unavailable
+                .to_string()
+                .starts_with("Landlock is not available")
+        );
+        assert!(
+            AbiRefusal::TooOld(2)
+                .to_string()
+                .starts_with("Landlock ABI 2 cannot restrict")
+        );
     }
 
     #[test]
@@ -1064,29 +1199,7 @@ mod tests {
 
     // ---- seccomp_program: run it in a classic-BPF interpreter ----
 
-    /// Execute `prog` against one `seccomp_data`; panics on a malformed program.
-    fn run(prog: &[Insn], arch: u32, nr: u32, arg0: u32, arg1: u32) -> u32 {
-        let (mut pc, mut acc) = (0usize, 0u32);
-        loop {
-            let i = prog[pc];
-            pc += 1;
-            match i.code {
-                BPF_LD_W_ABS => {
-                    acc = match i.k {
-                        OFF_NR => nr,
-                        OFF_ARCH => arch,
-                        OFF_ARG0 => arg0,
-                        OFF_ARG1 => arg1,
-                        k => panic!("load from {k}"),
-                    }
-                }
-                BPF_JEQ_K => pc += usize::from(if acc == i.k { i.jt } else { i.jf }),
-                BPF_JGE_K => pc += usize::from(if acc >= i.k { i.jt } else { i.jf }),
-                BPF_RET_K => return i.k,
-                c => panic!("opcode {c:#x}"),
-            }
-        }
-    }
+    use super::bpf_run as run;
 
     const AF_INET: u32 = 2;
     const AF_INET6: u32 = 10;
@@ -1095,9 +1208,35 @@ mod tests {
 
     fn every_case(arch: Arch) {
         for (unix, inet) in [(false, false), (true, false), (false, true), (true, true)] {
-            let prog = seccomp_program(arch, unix, inet);
-            let r = |nr, a0| run(&prog, arch.audit_arch, nr, a0, 0);
+            let program = seccomp_program(arch, unix, inet);
+            let prog = program.as_slice();
+            let r = |nr, a0| run(prog, arch.audit_arch, nr, a0, 0);
             let inet_expect = if inet { RET_ALLOW } else { RET_ERRNO | EACCES };
+            // The program agrees with the independent spec on a grid of interesting inputs (the Kani
+            // proof extends this to every input).
+            let audits = [arch.audit_arch, arch.audit_arch ^ 1, 0x4000_0003];
+            let nrs = [
+                0,
+                arch.socket,
+                arch.ioctl,
+                424,
+                425,
+                426,
+                427,
+                428,
+                0x3fff_ffff,
+                0x4000_0000,
+            ];
+            let vals = [0, AF_UNIX, AF_INET, TIOCSTI, TIOCLINUX, u32::MAX];
+            for (&a, &nr) in audits.iter().flat_map(|a| nrs.iter().map(move |n| (a, n))) {
+                for (&a0, &a1) in vals.iter().flat_map(|x| vals.iter().map(move |y| (x, y))) {
+                    assert_eq!(
+                        run(prog, a, nr, a0, a1),
+                        seccomp_spec(arch, unix, inet, a, nr, a0, a1),
+                        "audit {a:#x} nr {nr} a0 {a0} a1 {a1:#x}"
+                    );
+                }
+            }
             for fam in [AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, 0, 0xffff_ffff] {
                 assert_eq!(
                     r(arch.socket, fam),
@@ -1114,7 +1253,7 @@ mod tests {
                 assert_eq!(r(nr, AF_INET), RET_ALLOW, "nr {nr}");
             }
             // ioctl: only the two terminal-injection requests are refused, on any fd.
-            let io = |fd, req| run(&prog, arch.audit_arch, arch.ioctl, fd, req);
+            let io = |fd, req| run(prog, arch.audit_arch, arch.ioctl, fd, req);
             for fd in [0, 1, 2, 7] {
                 assert_eq!(io(fd, TIOCSTI), RET_ERRNO | EPERM, "TIOCSTI on fd {fd}");
                 assert_eq!(io(fd, TIOCLINUX), RET_ERRNO | EPERM, "TIOCLINUX on fd {fd}");
@@ -1128,12 +1267,12 @@ mod tests {
                 assert_eq!(r(from - 1, 0), RET_ALLOW);
             }
             assert_eq!(
-                run(&prog, 0x4000_0003, 0, 0, 0),
+                run(prog, 0x4000_0003, 0, 0, 0),
                 RET_KILL_PROCESS,
                 "i386 on x86_64"
             );
             assert_eq!(
-                run(&prog, arch.audit_arch ^ 1, arch.socket, AF_UNIX, 0),
+                run(prog, arch.audit_arch ^ 1, arch.socket, AF_UNIX, 0),
                 RET_KILL_PROCESS
             );
         }
@@ -1157,5 +1296,287 @@ mod tests {
             native_arch().is_some(),
             cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
         );
+    }
+}
+
+/// Kani proofs (`cargo kani`). They run over the shipped `seccomp_program` and `enforcement`,
+/// not over a copy. Inputs are symbolic over their full range, so the only bound is loop
+/// unwinding, and that is checked: `#[kani::unwind]` exceeds the longest program, and Kani
+/// fails if a loop would need more.
+///
+/// Trusted base, named so it is not mistaken for coverage: `bpf_run` is this repository's model
+/// of classic-BPF semantics, and Kani/CBMC itself. The kernel's interpreter is the external
+/// check: tests/linux.rs runs the same program in real kernels.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    // Unwind bound 30: the longest program (x86_64, AF_UNIX allowed, network refused) is 20
+    // instructions and the builder walks at most 26 ops. Kani fails if a loop needs more.
+
+    /// Structure (every instruction in the emitted subset, every jump inside the program, a `ret`
+    /// last), then the spec for every (audit_arch, nr, arg0, arg1). One harness per architecture
+    /// and socket mode, so each program is concrete and only the syscall is symbolic.
+    fn meets_spec(arch: Arch, unix: bool, inet: bool) {
+        let program = seccomp_program(arch, unix, inet);
+        let prog = program.as_slice();
+        assert!(!prog.is_empty() && prog.len() <= MAX_PROGRAM);
+        assert_eq!(prog[prog.len() - 1].code, BPF_RET_K, "ends in a return");
+        for (i, insn) in prog.iter().enumerate() {
+            match insn.code {
+                BPF_LD_W_ABS => {
+                    assert!(matches!(insn.k, OFF_NR | OFF_ARCH | OFF_ARG0 | OFF_ARG1))
+                }
+                BPF_JEQ_K | BPF_JGE_K => {
+                    assert!(i + 1 + usize::from(insn.jt) < prog.len());
+                    assert!(i + 1 + usize::from(insn.jf) < prog.len());
+                }
+                BPF_RET_K => {}
+                _ => panic!("instruction outside the emitted subset"),
+            }
+        }
+        let (audit, nr, a0, a1): (u32, u32, u32, u32) =
+            (kani::any(), kani::any(), kani::any(), kani::any());
+        let got = bpf_run(prog, audit, nr, a0, a1);
+        assert_eq!(got, seccomp_spec(arch, unix, inet, audit, nr, a0, a1));
+        // Non-vacuity: the verdicts this mode can produce are each reached.
+        kani::cover!(got == RET_ALLOW, "allow");
+        kani::cover!(got == RET_ERRNO | EPERM, "eperm");
+        kani::cover!(got == RET_KILL_PROCESS, "kill");
+        if !(unix && inet) {
+            kani::cover!(got == RET_ERRNO | EACCES, "eacces");
+        }
+    }
+
+    macro_rules! meets_spec_harness {
+        ($name:ident, $arch:expr, $unix:expr, $inet:expr) => {
+            #[kani::proof]
+            #[kani::unwind(30)]
+            fn $name() {
+                meets_spec($arch, $unix, $inet);
+            }
+        };
+    }
+
+    meets_spec_harness!(seccomp_x86_64_no_unix_no_inet, X86_64, false, false);
+    meets_spec_harness!(seccomp_x86_64_unix_no_inet, X86_64, true, false);
+    meets_spec_harness!(seccomp_x86_64_no_unix_inet, X86_64, false, true);
+    meets_spec_harness!(seccomp_x86_64_unix_inet, X86_64, true, true);
+    meets_spec_harness!(seccomp_aarch64_no_unix_no_inet, AARCH64, false, false);
+    meets_spec_harness!(seccomp_aarch64_unix_no_inet, AARCH64, true, false);
+    meets_spec_harness!(seccomp_aarch64_no_unix_inet, AARCH64, false, true);
+    meets_spec_harness!(seccomp_aarch64_unix_inet, AARCH64, true, true);
+
+    /// Vacuity controls: the same check must reject a program with one planted bug. Each takes the
+    /// real x86_64 program (no AF_UNIX, no network: every verdict occurs), breaks one thing, and
+    /// asserts the spec; Kani must find the counterexample (`should_panic`). If the spec or the
+    /// interpreter stopped looking, a control would pass and the proof job would fail.
+    fn planted(mutate: fn(&mut [Insn])) {
+        planted_in(false, false, mutate)
+    }
+
+    fn planted_in(unix: bool, inet: bool, mutate: fn(&mut [Insn])) {
+        let mut program = seccomp_program(X86_64, unix, inet);
+        mutate(program.as_mut_slice());
+        let prog = program.as_slice();
+        let (audit, nr, a0, a1): (u32, u32, u32, u32) =
+            (kani::any(), kani::any(), kani::any(), kani::any());
+        assert_eq!(
+            bpf_run(prog, audit, nr, a0, a1),
+            seccomp_spec(X86_64, unix, inet, audit, nr, a0, a1)
+        );
+    }
+
+    fn set_jeq(prog: &mut [Insn], code: u16, from: u32, to: u32) {
+        for i in prog.iter_mut().filter(|i| i.code == code && i.k == from) {
+            i.k = to;
+        }
+    }
+
+    fn set_ret(prog: &mut [Insn], from: u32, to: u32) {
+        for i in prog
+            .iter_mut()
+            .filter(|i| i.code == BPF_RET_K && i.k == from)
+        {
+            i.k = to;
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_tiocsti_not_checked() {
+        planted(|p| {
+            for i in p
+                .iter_mut()
+                .filter(|i| i.code == BPF_JEQ_K && i.k == TIOCSTI)
+            {
+                i.k = 0xffff_0000;
+            }
+        });
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_eperm_becomes_allow() {
+        planted(|p| set_ret(p, RET_ERRNO | EPERM, RET_ALLOW));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_eacces_becomes_allow() {
+        planted(|p| set_ret(p, RET_ERRNO | EACCES, RET_ALLOW));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_arch_check_skipped() {
+        planted(|p| p[1].jf = p[1].jt);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_tioclinux_not_checked() {
+        planted(|p| set_jeq(p, BPF_JEQ_K, TIOCLINUX, 0xffff_0000));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_x32_not_refused() {
+        planted(|p| set_jeq(p, BPF_JGE_K, 0x4000_0000, u32::MAX));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_io_uring_register_not_refused() {
+        planted(|p| set_jeq(p, BPF_JEQ_K, 427, 0xffff_ffff));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_af_unix_check_tests_af_inet() {
+        // The mode where only AF_UNIX is allowed: the family test is the whole decision.
+        planted_in(true, false, |p| set_jeq(p, BPF_JEQ_K, AF_UNIX, 2));
+    }
+
+    /// REQ-ZW-005, REQ-ZW-006, REQ-ZW-009 end to end, from the profile and the kernel ABI to the
+    /// filter's verdict on socket(2), stated from the requirement text rather than from the
+    /// booleans `enforcement` hands the builder: AF_UNIX is allowed iff the profile says
+    /// unix_sockets = "unfiltered" or Landlock confines it (ABI 9); any other family iff the
+    /// profile says mode = "unfiltered".
+    fn socket_verdict_follows_the_profile(arch: Arch) {
+        let abi: i32 = kani::any();
+        kani::assume(abi >= MIN_ABI);
+        let network = Network {
+            mode: if kani::any() {
+                NetworkMode::Unfiltered
+            } else {
+                NetworkMode::None
+            },
+            unix_sockets: if kani::any() {
+                UnixSockets::Unfiltered
+            } else {
+                UnixSockets::Confined
+            },
+            allow: Vec::new(),
+            allow_local_binding: false,
+        };
+        let e = enforcement(abi, &network).expect("abi >= MIN_ABI is accepted");
+        let program = seccomp_program(arch, e.unix_sockets, e.inet_sockets);
+        let family: u32 = kani::any();
+        let got = bpf_run(
+            program.as_slice(),
+            arch.audit_arch,
+            arch.socket,
+            family,
+            kani::any(),
+        );
+        let allowed = if family == AF_UNIX {
+            network.unix_sockets == UnixSockets::Unfiltered || abi >= UNIX_SOCKET_ABI
+        } else {
+            network.mode == NetworkMode::Unfiltered
+        };
+        assert_eq!(
+            got,
+            if allowed {
+                RET_ALLOW
+            } else {
+                RET_ERRNO | EACCES
+            }
+        );
+        kani::cover!(family == AF_UNIX && allowed && network.unix_sockets == UnixSockets::Confined);
+        kani::cover!(family == AF_UNIX && !allowed);
+        kani::cover!(family != AF_UNIX && allowed);
+        kani::cover!(family != AF_UNIX && !allowed);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    fn socket_verdict_follows_the_profile_x86_64() {
+        socket_verdict_follows_the_profile(X86_64);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    fn socket_verdict_follows_the_profile_aarch64() {
+        socket_verdict_follows_the_profile(AARCH64);
+    }
+
+    /// DD-ZW-003, REQ-ZW-005/006/009: for every kernel ABI and every network mode, a channel the
+    /// backend leaves open is either confined by Landlock at that ABI or explicitly opted into by
+    /// the profile; nothing is enforced that the ABI does not have; and ABIs below the minimum
+    /// are refused.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn enforcement_never_opens_an_unstated_channel() {
+        let abi: i32 = kani::any();
+        let network = Network {
+            mode: if kani::any() {
+                NetworkMode::Unfiltered
+            } else {
+                NetworkMode::None
+            },
+            unix_sockets: if kani::any() {
+                UnixSockets::Unfiltered
+            } else {
+                UnixSockets::Confined
+            },
+            allow: Vec::new(),
+            allow_local_binding: false,
+        };
+        match enforcement(abi, &network) {
+            Err(_) => assert!(abi < MIN_ABI),
+            Ok(e) => {
+                assert!(abi >= MIN_ABI);
+                assert!(e.abi >= MIN_ABI && e.abi <= MAX_KNOWN_ABI && e.abi <= abi);
+                // Network sockets only when the profile says unfiltered.
+                assert_eq!(e.inet_sockets, network.mode == NetworkMode::Unfiltered);
+                // AF_UNIX only when Landlock confines it, or the profile says unfiltered.
+                assert!(
+                    !e.unix_sockets
+                        || (e.resolve_unix && e.scope_abstract_unix)
+                        || network.unix_sockets == UnixSockets::Unfiltered
+                );
+                // Landlock is never asked for a right its ABI lacks.
+                assert!(!e.tcp || e.abi >= 4);
+                assert!(!e.udp || e.abi >= 10);
+                assert!(!e.ioctl_dev || e.abi >= 5);
+                assert!(!(e.scope_signals || e.scope_abstract_unix) || e.abi >= 6);
+                assert!(!e.audit_log || e.abi >= 7);
+                assert!(!e.resolve_unix || e.abi >= UNIX_SOCKET_ABI);
+                // ...and is asked for every right it has that the profile did not opt out of.
+                assert_eq!(e.tcp, network.mode == NetworkMode::None && e.abi >= 4);
+                assert_eq!(e.scope_signals, e.abi >= 6);
+                kani::cover!(e.unix_sockets && network.unix_sockets == UnixSockets::Confined);
+                kani::cover!(!e.unix_sockets);
+            }
+        }
     }
 }
