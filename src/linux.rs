@@ -794,6 +794,17 @@ pub(crate) fn seccomp_spec(
     RET_ALLOW
 }
 
+/// Everything `confine` decides before it changes the process: the path plan, the syscall table
+/// and what this kernel can enforce. `zwinger check` runs it, so `check` refuses whatever `run`
+/// would refuse, including a granted path that does not exist yet.
+#[cfg(target_os = "linux")]
+pub fn preflight(profile: &Profile) -> Result<(Enforcement, Plan), String> {
+    let plan = plan(profile)?;
+    native_arch().ok_or("no seccomp syscall table for this architecture; refusing")?;
+    let enf = enforcement(kernel_abi(), &profile.network).map_err(|e| e.to_string())?;
+    Ok((enf, plan))
+}
+
 /// Confine the calling process to `profile`. On success every later `exec` runs confined.
 #[cfg(target_os = "linux")]
 pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
@@ -803,9 +814,8 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
     };
 
-    let plan = plan(profile)?;
+    let (enf, plan) = preflight(profile)?;
     let arch = native_arch().ok_or("no seccomp syscall table for this architecture; refusing")?;
-    let enf = enforcement(kernel_abi(), &profile.network).map_err(|e| e.to_string())?;
     let abi = ABI::from(enf.abi);
     let err = |e: landlock::RulesetError| format!("Landlock: {e}; refusing");
 

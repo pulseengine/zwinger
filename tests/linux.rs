@@ -74,6 +74,14 @@ impl Scene {
         }
     }
 
+    fn check(&self) -> Output {
+        Command::new(ZWINGER)
+            .arg("check")
+            .arg(&self.profile)
+            .output()
+            .unwrap()
+    }
+
     fn path(&self, rel: &str) -> PathBuf {
         self.root.0.join(rel)
     }
@@ -408,6 +416,12 @@ fn refused(extra: &str) {
         String::from_utf8_lossy(&o.stderr)
     );
     assert!(!marker.exists(), "{extra}: the command ran");
+    let c = sc.check();
+    assert_eq!(
+        c.status.code(),
+        Some(78),
+        "check passed what run refuses: {extra}"
+    );
 }
 
 // rivet: verifies REQ-ZW-005
@@ -486,4 +500,45 @@ fn session_sees_profile_and_abi_and_the_journal_line_names_them() {
         err.contains(&format!("absent, skipped: {}", s(&sc.path("absent")))),
         "{err}"
     );
+}
+
+// rivet: verifies REQ-ZW-001
+#[test]
+fn check_refuses_a_granted_path_that_does_not_exist_yet() {
+    // A runner's _work before registration: run refuses it, so check must too.
+    let sc = Scene::new("");
+    let c = sc.check();
+    assert!(c.status.success(), "{}", String::from_utf8_lossy(&c.stderr));
+    std::fs::remove_dir(sc.path("w")).unwrap();
+    let c = sc.check();
+    assert_eq!(c.status.code(), Some(78));
+    let err = String::from_utf8_lossy(&c.stderr);
+    assert!(
+        err.contains(s(&sc.path("w"))),
+        "the refusal names the path: {err}"
+    );
+    assert!(
+        err.contains("No such file or directory"),
+        "the refusal says why: {err}"
+    );
+}
+
+// rivet: verifies REQ-ZW-010
+#[test]
+fn check_reports_what_run_would_enforce_without_running_anything() {
+    let sc = Scene::new("");
+    let c = sc.check();
+    assert!(c.status.success(), "{}", String::from_utf8_lossy(&c.stderr));
+    let out = String::from_utf8_lossy(&c.stdout);
+    let lines: Vec<&str> = out.lines().collect();
+    let abi = kernel_abi().min(zwinger::linux::MAX_KNOWN_ABI);
+    assert_eq!(lines.len(), 2, "{out}");
+    assert_eq!(lines[0], "zwinger: profile e2e ok");
+    assert!(
+        lines[1].starts_with(&format!(
+            "zwinger: e2e would be confined: landlock abi {abi};"
+        )),
+        "{out}"
+    );
+    assert!(lines[1].contains("network: none"), "{out}");
 }

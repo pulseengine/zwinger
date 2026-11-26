@@ -5,7 +5,7 @@ zwinger confines an AI coding-agent session (Claude Code and the processes it st
 **Status:** the Linux backend enforces profiles. On macOS, `run` still refuses: without an enforcement backend it will not start anything unconfined.
 
 ```sh
-zwinger check profile.yaml           # exit 0, or 78 with the reason
+zwinger check profile.yaml           # Linux: everything run checks, without running; 78 with the reason
 zwinger explain profile.yaml PATH    # which grant allows PATH (or tcp:PORT), and why not
 zwinger run profile.yaml -- claude   # Linux: confined exec; elsewhere: refused (exit 78)
 ```
