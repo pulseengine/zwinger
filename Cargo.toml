@@ -10,7 +10,9 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+# rivet's own YAML stack (lossless CST + serde), the parser every pulseengine artifact file goes
+# through. Not on crates.io yet (rivet#1099), so it is pinned by release tag; Cargo.lock pins the commit.
+rivet-yaml = { git = "https://github.com/pulseengine/rivet", tag = "v0.43.3" }
 
 [dev-dependencies]
 

@@ -61,12 +61,12 @@ impl Scene {
         };
         let write = [root.join("w"), PathBuf::from("/dev/null")];
         let text = format!(
-            "name = \"e2e\"\nread = [{}]\nwrite = [{}]\n{}",
+            "name: \"e2e\"\nread: [{}]\nwrite: [{}]\n{}",
             list(&read),
             list(&write),
             extra.replace('@', root.to_str().unwrap())
         );
-        let profile = root.join("profile.toml");
+        let profile = root.join("profile.yaml");
         std::fs::write(&profile, text).unwrap();
         Scene {
             root: Dir(root),
@@ -413,21 +413,21 @@ fn refused(extra: &str) {
 // rivet: verifies REQ-ZW-005
 #[test]
 fn host_allow_list_is_refused_end_to_end() {
-    refused("[network]\nallow = [\"github.com\"]\n");
-    refused("[network]\nallow_local_binding = true\n");
+    refused("network:\n  allow: [\"github.com\"]\n");
+    refused("network:\n  allow_local_binding: true\n");
 }
 
 // rivet: verifies REQ-ZW-008
 #[test]
 fn unenforceable_carve_outs_are_refused_end_to_end() {
-    refused("deny_read = [\"@/r/public\"]\n");
-    refused("deny_write = [\"@/w/settings.json\"]\n");
+    refused("deny_read: [\"@/r/public\"]\n");
+    refused("deny_write: [\"@/w/settings.json\"]\n");
 }
 
 // rivet: verifies REQ-ZW-009
 #[test]
 fn unfiltered_network_allows_egress_but_paths_stay_confined() {
-    let sc = Scene::new("[network]\nmode = \"unfiltered\"\n");
+    let sc = Scene::new("network:\n  mode: \"unfiltered\"\n");
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let script = format!(
         "echo hi > /dev/tcp/127.0.0.1/{}",
@@ -459,7 +459,7 @@ fn unfiltered_network_allows_egress_but_paths_stay_confined() {
 #[test]
 fn unfiltered_unix_sockets_reach_sockets_outside_the_profile() {
     // The opt-in does what it says: this is the documented hole, not a leak.
-    let sc = Scene::new("[network]\nunix_sockets = \"unfiltered\"\n");
+    let sc = Scene::new("network:\n  unix_sockets: \"unfiltered\"\n");
     let path = sc.path("o/agent.sock");
     let _l = UnixListener::bind(&path).unwrap();
     let o = probe(&sc, "unix_connect", s(&path));
@@ -471,7 +471,7 @@ fn unfiltered_unix_sockets_reach_sockets_outside_the_profile() {
 // rivet: verifies REQ-ZW-010
 #[test]
 fn session_sees_profile_and_abi_and_the_journal_line_names_them() {
-    let sc = Scene::new("write_if_present = [\"@/absent\"]\n");
+    let sc = Scene::new("write_if_present: [\"@/absent\"]\n");
     let o = sc.run(&bash("echo \"$ZWINGER_PROFILE $ZWINGER_ABI\""));
     assert!(o.status.success());
     let abi = kernel_abi().min(zwinger::linux::MAX_KNOWN_ABI);

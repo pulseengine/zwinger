@@ -1075,8 +1075,8 @@ mod tests {
         Tree(root)
     }
     fn profile(t: &Tree, body: &str) -> Profile {
-        let text = format!("name = \"t\"\n{}", body.replace("@", t.0.to_str().unwrap()));
-        Profile::parse(Path::new("t.toml"), &text).unwrap()
+        let text = format!("name: \"t\"\n{}", body.replace("@", t.0.to_str().unwrap()));
+        Profile::parse(Path::new("t.yaml"), &text).unwrap()
     }
 
     // rivet: verifies REQ-ZW-004
@@ -1085,7 +1085,7 @@ mod tests {
         let t = tree();
         let p = plan(&profile(
             &t,
-            "read = [\"@/usr\"]\nwrite = [\"@/home/repo\"]\n",
+            "read: [\"@/usr\"]\nwrite: [\"@/home/repo\"]\n",
         ))
         .unwrap();
         let resolved = |gs: &[Grant]| gs.iter().map(|g| g.resolved.clone()).collect::<Vec<_>>();
@@ -1104,8 +1104,8 @@ mod tests {
     #[test]
     fn missing_granted_path_refuses() {
         let t = tree();
-        assert!(plan(&profile(&t, "read = [\"@/nope\"]\n")).is_err());
-        assert!(plan(&profile(&t, "write = [\"@/nope\"]\n")).is_err());
+        assert!(plan(&profile(&t, "read: [\"@/nope\"]\n")).is_err());
+        assert!(plan(&profile(&t, "write: [\"@/nope\"]\n")).is_err());
     }
 
     // rivet: verifies REQ-ZW-008
@@ -1115,14 +1115,14 @@ mod tests {
         assert!(
             plan(&profile(
                 &t,
-                "read = [\"@/home\"]\ndeny_read = [\"@/home/.ssh\"]\n"
+                "read: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n"
             ))
             .is_err()
         );
         assert!(
             plan(&profile(
                 &t,
-                "write = [\"@/home\"]\ndeny_read = [\"@/home/.ssh\"]\n"
+                "write: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n"
             ))
             .is_err()
         );
@@ -1130,7 +1130,7 @@ mod tests {
         assert!(
             plan(&profile(
                 &t,
-                "read = [\"@/home\"]\ndeny_read = [\"@/home/later\"]\n"
+                "read: [\"@/home\"]\ndeny_read: [\"@/home/later\"]\n"
             ))
             .is_err()
         );
@@ -1142,7 +1142,7 @@ mod tests {
         assert!(
             plan(&profile(
                 &t,
-                "read = [\"@/usr\"]\ndeny_read = [\"@/home/.ssh\"]\n"
+                "read: [\"@/usr\"]\ndeny_read: [\"@/home/.ssh\"]\n"
             ))
             .is_ok()
         );
@@ -1151,7 +1151,7 @@ mod tests {
     #[test]
     fn stated_read_exception_inside_deny_read_is_allowed() {
         let t = tree();
-        let p = "read = [\"@/home/.ssh/k.pub\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        let p = "read: [\"@/home/.ssh/k.pub\"]\ndeny_read: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, p)).is_ok());
     }
 
@@ -1163,7 +1163,7 @@ mod tests {
         std::os::unix::fs::symlink(t.0.join("home/.ssh"), t.0.join("usr/keys")).unwrap();
         std::os::unix::fs::symlink(t.0.join("home/.ssh/k.pub"), t.0.join("usr/k")).unwrap();
         for read in ["@/usr/keys", "@/usr/k"] {
-            let body = format!("read = [\"{read}\"]\ndeny_read = [\"@/home/.ssh\"]\n");
+            let body = format!("read: [\"{read}\"]\ndeny_read: [\"@/home/.ssh\"]\n");
             assert!(plan(&profile(&t, &body)).is_err(), "{read}");
         }
     }
@@ -1174,9 +1174,9 @@ mod tests {
     fn deny_read_under_a_symlinked_grant_refuses() {
         let t = tree();
         std::os::unix::fs::symlink(t.0.join("home"), t.0.join("h")).unwrap();
-        let body = "read = [\"@/h\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        let body = "read: [\"@/h\"]\ndeny_read: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
-        let body = "read = [\"@/home\"]\ndeny_read = [\"@/h/.ssh\"]\n";
+        let body = "read: [\"@/home\"]\ndeny_read: [\"@/h/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
     }
 
@@ -1186,9 +1186,9 @@ mod tests {
     fn write_through_a_symlink_into_a_denied_tree_refuses() {
         let t = tree();
         std::os::unix::fs::symlink(t.0.join("home/.ssh"), t.0.join("usr/keys")).unwrap();
-        let body = "write = [\"@/usr/keys\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        let body = "write: [\"@/usr/keys\"]\ndeny_read: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
-        let body = "write = [\"@/usr/keys\"]\ndeny_write = [\"@/home/.ssh\"]\n";
+        let body = "write: [\"@/usr/keys\"]\ndeny_write: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
     }
 
@@ -1249,14 +1249,14 @@ mod tests {
     #[test]
     fn deny_write_inside_write_refuses() {
         let t = tree();
-        let body = "write = [\"@/home/repo\"]\ndeny_write = [\"@/home/repo/.claude\"]\n";
+        let body = "write: [\"@/home/repo\"]\ndeny_write: [\"@/home/repo/.claude\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
     }
 
     #[test]
     fn deny_write_inside_read_only_tree_is_enforced_by_omission() {
         let t = tree();
-        let body = "read = [\"@/home/repo\"]\ndeny_write = [\"@/home/repo/.claude\"]\n";
+        let body = "read: [\"@/home/repo\"]\ndeny_write: [\"@/home/repo/.claude\"]\n";
         assert!(plan(&profile(&t, body)).is_ok());
     }
 
@@ -1264,7 +1264,7 @@ mod tests {
     #[test]
     fn missing_if_present_grants_are_skipped_not_refused() {
         let t = tree();
-        let body = "read_if_present = [\"@/nope\", \"@/usr\"]\nwrite_if_present = [\"@/gone\"]\n";
+        let body = "read_if_present: [\"@/nope\", \"@/usr\"]\nwrite_if_present: [\"@/gone\"]\n";
         let p = plan(&profile(&t, body)).unwrap();
         assert_eq!(p.read.len(), 1);
         assert_eq!(p.read[0].field, "read_if_present");
@@ -1276,11 +1276,11 @@ mod tests {
     #[test]
     fn if_present_grants_obey_the_carve_out_rules() {
         let t = tree();
-        let body = "write_if_present = [\"@/home\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        let body = "write_if_present: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
-        let body = "write_if_present = [\"@/home/repo\"]\ndeny_write = [\"@/home/repo/.claude\"]\n";
+        let body = "write_if_present: [\"@/home/repo\"]\ndeny_write: [\"@/home/repo/.claude\"]\n";
         assert!(plan(&profile(&t, body)).is_err());
-        let body = "read_if_present = [\"@/home/.ssh/k.pub\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        let body = "read_if_present: [\"@/home/.ssh/k.pub\"]\ndeny_read: [\"@/home/.ssh\"]\n";
         assert!(plan(&profile(&t, body)).is_ok(), "a stated read exception");
     }
 
@@ -1288,7 +1288,7 @@ mod tests {
     #[test]
     fn explain_names_the_deciding_grant() {
         let t = tree();
-        let pr = profile(&t, "read = [\"@/home\"]\nwrite = [\"@/home/repo\"]\n");
+        let pr = profile(&t, "read: [\"@/home\"]\nwrite: [\"@/home/repo\"]\n");
         let pl = plan(&pr).unwrap();
         let home = t.0.join("home");
         let ex = |p: &Path| explain(&pr, &pl, p.to_str().unwrap());
@@ -1315,14 +1315,14 @@ mod tests {
     #[test]
     fn explain_picks_the_most_specific_read_grant() {
         let t = tree();
-        let pr = profile(&t, "read = [\"@/home\", \"@/home/repo\"]\n");
+        let pr = profile(&t, "read: [\"@/home\", \"@/home/repo\"]\n");
         let pl = plan(&pr).unwrap();
         let x = explain(&pr, &pl, t.0.join("home/repo/a").to_str().unwrap());
         assert_eq!(
             x[1],
             format!("read: allowed (read {})", t.0.join("home/repo").display())
         );
-        let pr = profile(&t, "read = [\"@/home/repo\", \"@/home\"]\n");
+        let pr = profile(&t, "read: [\"@/home/repo\", \"@/home\"]\n");
         let pl = plan(&pr).unwrap();
         let x = explain(&pr, &pl, t.0.join("home/repo/a").to_str().unwrap());
         assert_eq!(
@@ -1339,7 +1339,7 @@ mod tests {
         let pl = plan(&none).unwrap();
         assert!(explain(&none, &pl, "tcp:443")[0].starts_with("tcp port 443: denied"));
         assert!(explain(&none, &pl, "udp:53")[0].starts_with("udp port 53: denied"));
-        let open = profile(&t, "[network]\nmode = \"unfiltered\"\n");
+        let open = profile(&t, "network:\n  mode: \"unfiltered\"\n");
         let pl = plan(&open).unwrap();
         assert!(explain(&open, &pl, "tcp:443")[0].starts_with("tcp port 443: allowed"));
         // Only tcp: and udp: are ports; anything else is a path.
@@ -1349,9 +1349,9 @@ mod tests {
     // rivet: verifies REQ-ZW-011
     #[test]
     fn runner_template_refuses_until_substituted_then_plans() {
-        let template = include_str!("../profiles/github-runner.toml");
+        let template = include_str!("../profiles/github-runner.yaml");
         assert!(matches!(
-            Profile::parse(Path::new("github-runner.toml"), template),
+            Profile::parse(Path::new("github-runner.yaml"), template),
             Err(crate::profile::ProfileError::Invalid(..))
         ));
         let t = tree();
@@ -1366,7 +1366,7 @@ mod tests {
         let home = t.0.join("runner");
         let text = template.replace("{{home}}", home.to_str().unwrap());
         assert!(!text.contains("{{"), "the only placeholder is {{home}}");
-        let p = Profile::parse(Path::new("runner.toml"), &text).unwrap();
+        let p = Profile::parse(Path::new("runner.yaml"), &text).unwrap();
         assert_eq!(p.network.mode, NetworkMode::Unfiltered);
         assert!(
             p.write
@@ -1393,14 +1393,14 @@ mod tests {
     #[test]
     fn host_allow_list_refuses_on_linux() {
         let t = tree();
-        assert!(plan(&profile(&t, "[network]\nallow = [\"github.com\"]\n")).is_err());
+        assert!(plan(&profile(&t, "network:\n  allow: [\"github.com\"]\n")).is_err());
     }
 
     // rivet: verifies REQ-ZW-005
     #[test]
     fn local_binding_refuses_on_linux() {
         let t = tree();
-        assert!(plan(&profile(&t, "[network]\nallow_local_binding = true\n")).is_err());
+        assert!(plan(&profile(&t, "network:\n  allow_local_binding: true\n")).is_err());
     }
 
     #[test]

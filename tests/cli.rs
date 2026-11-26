@@ -23,7 +23,7 @@ mod tempfile_path {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("zwinger-test-{}-{n}.toml", std::process::id()));
+        let p = std::env::temp_dir().join(format!("zwinger-test-{}-{n}.yaml", std::process::id()));
         std::fs::write(&p, text).unwrap();
         Path(p)
     }
@@ -31,7 +31,7 @@ mod tempfile_path {
 
 #[test]
 fn check_accepts_a_valid_profile() {
-    let p = profile("name = \"s\"\nwrite = [\"/tmp/s\"]\n");
+    let p = profile("name: \"s\"\nwrite: [\"/tmp/s\"]\n");
     let o = zwinger(&["check", p.0.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
@@ -39,7 +39,7 @@ fn check_accepts_a_valid_profile() {
 // rivet: verifies REQ-ZW-001
 #[test]
 fn check_refuses_a_missing_profile() {
-    let o = zwinger(&["check", "/nonexistent/zwinger.toml"]);
+    let o = zwinger(&["check", "/nonexistent/zwinger.yaml"]);
     assert_eq!(o.status.code(), Some(78));
 }
 
@@ -49,7 +49,7 @@ fn check_refuses_a_missing_profile() {
 fn run_never_starts_unconfined() {
     // A valid profile, a harmless command: still refused, because no backend exists (REQ-ZW-001).
     let marker = std::env::temp_dir().join(format!("zwinger-ran-{}", std::process::id()));
-    let p = profile("name = \"s\"\n");
+    let p = profile("name: \"s\"\n");
     let o = zwinger(&[
         "run",
         p.0.to_str().unwrap(),
@@ -68,7 +68,7 @@ fn bad_usage_exits_2() {
         &["--frobnicate"],
         &["frobnicate"],
         &["check"],
-        &["run", "p.toml", "x"],
+        &["run", "p.yaml", "x"],
     ] {
         let o = zwinger(args);
         assert_eq!(o.status.code(), Some(2), "{args:?}");
@@ -98,7 +98,7 @@ fn explain_names_the_rule_for_a_path_and_a_port() {
     let dir = std::env::temp_dir().join(format!("zwinger-explain-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("w")).unwrap();
     let p = profile(&format!(
-        "name = \"s\"\nwrite = [{:?}]\n",
+        "name: \"s\"\nwrite: [{:?}]\n",
         dir.join("w").to_str().unwrap()
     ));
     let f = dir.join("w/f");
@@ -108,7 +108,7 @@ fn explain_names_the_rule_for_a_path_and_a_port() {
     assert!(out.contains("write: allowed (write "), "{out}");
     let o = zwinger(&["explain", p.0.to_str().unwrap(), "tcp:443"]);
     assert!(String::from_utf8_lossy(&o.stdout).starts_with("tcp port 443: denied"));
-    let o = zwinger(&["explain", "/nonexistent/z.toml", "/x"]);
+    let o = zwinger(&["explain", "/nonexistent/z.yaml", "/x"]);
     assert_eq!(o.status.code(), Some(78));
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -5,28 +5,30 @@ zwinger confines an AI coding-agent session (Claude Code and the processes it st
 **Status:** the Linux backend enforces profiles. On macOS, `run` still refuses: without an enforcement backend it will not start anything unconfined.
 
 ```sh
-zwinger check profile.toml           # exit 0, or 78 with the reason
-zwinger explain profile.toml PATH    # which grant allows PATH (or tcp:PORT), and why not
-zwinger run profile.toml -- claude   # Linux: confined exec; elsewhere: refused (exit 78)
+zwinger check profile.yaml           # exit 0, or 78 with the reason
+zwinger explain profile.yaml PATH    # which grant allows PATH (or tcp:PORT), and why not
+zwinger run profile.yaml -- claude   # Linux: confined exec; elsewhere: refused (exit 78)
 ```
 
-```toml
-name = "demo"
-read = ["/usr", "/etc", "/lib", "/lib64"]   # read + execute
-read_if_present = ["/opt"]                 # skipped when absent
-write = ["/home/me/git/demo", "/tmp/demo", "/dev/null"]
-deny_read = ["/home/me/.ssh"]                # carve-outs
-deny_write = []
-mach_lookup = ["com.apple.server.bluetooth"] # macOS only
+```yaml
+name: demo
+read: [/usr, /etc, /lib, /lib64]        # read + execute
+read_if_present: [/opt]                # skipped when absent
+write: [/home/me/git/demo, /tmp/demo, /dev/null]
+deny_read: [/home/me/.ssh]             # carve-outs
+deny_write: []
+mach_lookup: [com.apple.server.bluetooth]  # macOS only
 
-[network]
-mode = "none"                 # "none" (default) or "unfiltered" (paths confined, network not)
-allow = []                    # exact host names; empty = no egress
-allow_local_binding = false
-unix_sockets = "confined"     # or "unfiltered": AF_UNIX allowed and not confined
+network:
+  mode: none                 # none (default) or unfiltered (paths confined, network not)
+  allow: []                  # exact host names; empty = no egress
+  allow_local_binding: false
+  unix_sockets: confined     # or unfiltered: AF_UNIX allowed and not confined
 ```
 
-Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_read` tree is a stated exception (one public key in a secrets directory). A `write` inside a denied tree, the same path both allowed and denied, a relative or `..` path, an unknown key or a wildcard host is refused when the profile loads.
+Profiles are read by [rivet-yaml](https://github.com/pulseengine/rivet/tree/main/rivet-yaml), the YAML parser rivet uses for every artifact file. It refuses duplicate keys, tags and multi-document files, and reads `yes`/`on` as strings, so a YAML 1.1 boolean is refused rather than guessed.
+
+Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_read` tree is a stated exception (one public key in a secrets directory). A `write` inside a denied tree, the same path both allowed and denied, a relative or `..` path, an unknown or duplicate key, a null name or a wildcard host is refused when the profile loads.
 
 ## Linux
 
@@ -53,7 +55,7 @@ The session gets `ZWINGER_PROFILE` and `ZWINGER_ABI` in its environment. Below L
 
 ### Self-hosted CI runners
 
-[`profiles/github-runner.toml`](profiles/github-runner.toml) confines one runner: substitute `{{home}}`, configure the runner with `--disableupdate`, and prefix the unit's command with `zwinger run PROFILE --`. Paths are confined; the network is not, because loopback build servers on ephemeral ports cannot be told from remote ports by Landlock (DD-ZW-004). The runner's own credentials stay readable to jobs.
+[`profiles/github-runner.yaml`](profiles/github-runner.yaml) confines one runner: substitute `{{home}}`, configure the runner with `--disableupdate`, and prefix the unit's command with `zwinger run PROFILE --`. Paths are confined; the network is not, because loopback build servers on ephemeral ports cannot be told from remote ports by Landlock (DD-ZW-004). The runner's own credentials stay readable to jobs.
 
 Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes outside the granted trees; signals to other processes below ABI 6; device ioctls below ABI 5.
 
