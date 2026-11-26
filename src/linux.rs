@@ -23,7 +23,7 @@
 //!   could swap a symlink between the two already runs unconfined as the same user; the session
 //!   it would target does not exist until the exec.
 
-use crate::profile::{Network, NetworkMode, Profile, UnixSockets, within};
+use crate::profile::{Network, NetworkMode, Profile, UnixSockets, normalize, within};
 use std::path::{Path, PathBuf};
 
 /// Lowest Landlock ABI the backend accepts: ABI 3 adds `Truncate`.
@@ -194,14 +194,14 @@ fn resolve(p: &Path) -> PathBuf {
     let mut cur = p;
     loop {
         if let Ok(c) = cur.canonicalize() {
-            return rest.iter().rev().fold(c, |acc: PathBuf, n| acc.join(n));
+            return normalize(&rest.iter().rev().fold(c, |acc: PathBuf, n| acc.join(n)));
         }
         match (cur.parent(), cur.file_name()) {
             (Some(parent), Some(name)) => {
                 rest.push(name.to_owned());
                 cur = parent;
             }
-            _ => return p.to_path_buf(),
+            _ => return normalize(p),
         }
     }
 }
@@ -231,6 +231,207 @@ fn grants<'a>(
     Ok(out)
 }
 
+/// A denied path: as the profile stated it, and as Landlock would reach it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Denied {
+    pub stated: PathBuf,
+    pub resolved: PathBuf,
+}
+
+/// Why Landlock cannot enforce a profile's denied paths as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CarveRefusal {
+    /// A denied path lies inside a granted tree; Landlock grants cannot be subtracted from.
+    DenyInsideGrant {
+        deny_field: &'static str,
+        deny: Denied,
+        grant: Grant,
+    },
+    /// A grant resolves into a denied tree and is not a read exception the profile stated.
+    GrantInsideDeny {
+        deny_field: &'static str,
+        deny: Denied,
+        grant: Grant,
+    },
+}
+
+impl std::fmt::Display for CarveRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CarveRefusal::DenyInsideGrant {
+                deny_field: "deny_read",
+                deny,
+                grant,
+            } => write!(
+                f,
+                "deny_read: {} lies inside {} {} (resolved: {} in {}); Landlock cannot carve a \
+                 denied path out of a granted tree; refusing",
+                deny.stated.display(),
+                grant.field,
+                grant.stated.display(),
+                deny.resolved.display(),
+                grant.resolved.display()
+            ),
+            CarveRefusal::DenyInsideGrant {
+                deny_field,
+                deny,
+                grant,
+            } => write!(
+                f,
+                "{deny_field}: {} lies inside {} {}; Landlock cannot carve a read-only path out \
+                 of a writable tree; refusing",
+                deny.stated.display(),
+                grant.field,
+                grant.stated.display()
+            ),
+            CarveRefusal::GrantInsideDeny {
+                deny_field,
+                deny,
+                grant,
+            } => write!(
+                f,
+                "{}: {} resolves to {}, inside {deny_field} {}; refusing",
+                grant.field,
+                grant.stated.display(),
+                grant.resolved.display(),
+                deny.stated.display()
+            ),
+        }
+    }
+}
+
+/// One path entry as the carve-out rules see it: its field, as stated, as resolved.
+#[derive(Debug, Clone, Copy)]
+pub struct PathView<'a> {
+    pub field: &'static str,
+    pub stated: &'a Path,
+    pub resolved: &'a Path,
+}
+
+/// Which carve-out rule a profile breaks: the rule, and the deny and grant entries by index
+/// (`write_grant` says which grant list `grant` indexes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Violation {
+    pub deny_inside_grant: bool,
+    pub deny_write: bool,
+    pub deny: usize,
+    pub write_grant: bool,
+    pub grant: usize,
+}
+
+/// The carve-out rules on resolved paths, separate from the filesystem and allocation-free so
+/// the Kani proof covers them. Landlock only grants, so a profile is enforceable as written
+/// exactly when no granted tree covers a denied path, and no grant reaches into a denied tree
+/// except a read the profile stated inside a deny_read (one public key in a secrets directory).
+pub fn first_carve_violation(
+    read: &[PathView],
+    write: &[PathView],
+    deny_read: &[PathView],
+    deny_write: &[PathView],
+) -> Option<Violation> {
+    for (di, d) in deny_read.iter().enumerate() {
+        let grants = read
+            .iter()
+            .map(|g| (false, g))
+            .chain(write.iter().map(|g| (true, g)));
+        for (gi, (write_grant, g)) in grants.enumerate() {
+            let grant = if write_grant { gi - read.len() } else { gi };
+            let v = |deny_inside_grant| Violation {
+                deny_inside_grant,
+                deny_write: false,
+                deny: di,
+                write_grant,
+                grant,
+            };
+            if within(d.resolved, g.resolved) {
+                return Some(v(true));
+            }
+            let stated = g.field.starts_with("read")
+                && within(g.stated, d.stated)
+                && !within(d.stated, g.stated);
+            if within(g.resolved, d.resolved) && !stated {
+                return Some(v(false));
+            }
+        }
+    }
+    for (di, d) in deny_write.iter().enumerate() {
+        for (gi, g) in write.iter().enumerate() {
+            let v = |deny_inside_grant| Violation {
+                deny_inside_grant,
+                deny_write: true,
+                deny: di,
+                write_grant: true,
+                grant: gi,
+            };
+            if within(d.resolved, g.resolved) {
+                return Some(v(true));
+            }
+            if within(g.resolved, d.resolved) {
+                return Some(v(false));
+            }
+        }
+    }
+    None
+}
+
+/// `first_carve_violation` over owned grants and denied paths, as a refusal naming the paths.
+pub fn check_carve_outs(
+    read: &[Grant],
+    write: &[Grant],
+    deny_read: &[Denied],
+    deny_write: &[Denied],
+) -> Result<(), CarveRefusal> {
+    fn g(gs: &[Grant]) -> Vec<PathView<'_>> {
+        gs.iter()
+            .map(|g| PathView {
+                field: g.field,
+                stated: &g.stated,
+                resolved: &g.resolved,
+            })
+            .collect()
+    }
+    fn d<'a>(field: &'static str, ds: &'a [Denied]) -> Vec<PathView<'a>> {
+        ds.iter()
+            .map(|d| PathView {
+                field,
+                stated: &d.stated,
+                resolved: &d.resolved,
+            })
+            .collect()
+    }
+    let Some(v) = first_carve_violation(
+        &g(read),
+        &g(write),
+        &d("deny_read", deny_read),
+        &d("deny_write", deny_write),
+    ) else {
+        return Ok(());
+    };
+    let (deny_field, deny) = if v.deny_write {
+        ("deny_write", deny_write[v.deny].clone())
+    } else {
+        ("deny_read", deny_read[v.deny].clone())
+    };
+    let grant = if v.write_grant {
+        write[v.grant].clone()
+    } else {
+        read[v.grant].clone()
+    };
+    Err(if v.deny_inside_grant {
+        CarveRefusal::DenyInsideGrant {
+            deny_field,
+            deny,
+            grant,
+        }
+    } else {
+        CarveRefusal::GrantInsideDeny {
+            deny_field,
+            deny,
+            grant,
+        }
+    })
+}
+
 /// Resolve the profile's paths and refuse anything Landlock cannot enforce as written.
 pub fn plan(p: &Profile) -> Result<Plan, String> {
     if !p.network.allow.is_empty() {
@@ -251,57 +452,17 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
     let mut skipped = Vec::new();
     let read = grants(p.reads(), &mut skipped)?;
     let write = grants(p.writes(), &mut skipped)?;
-    let deny_read: Vec<PathBuf> = p.deny_read.iter().map(|d| resolve(d)).collect();
-    let deny_write: Vec<PathBuf> = p.deny_write.iter().map(|d| resolve(d)).collect();
-
-    for (d, dl) in deny_read.iter().zip(&p.deny_read) {
-        for g in read.iter().chain(&write) {
-            if within(d, &g.resolved) {
-                return Err(format!(
-                    "deny_read: {} lies inside {} {} (resolved: {} in {}); Landlock cannot \
-                     carve a denied path out of a granted tree; refusing",
-                    dl.display(),
-                    g.field,
-                    g.stated.display(),
-                    d.display(),
-                    g.resolved.display()
-                ));
-            }
-            // A read inside deny_read is an exception only where the profile wrote it so.
-            let stated = g.field.starts_with("read") && within(&g.stated, dl) && g.stated != *dl;
-            if within(&g.resolved, d) && !stated {
-                return Err(format!(
-                    "{}: {} resolves to {}, inside deny_read {}; refusing",
-                    g.field,
-                    g.stated.display(),
-                    g.resolved.display(),
-                    dl.display()
-                ));
-            }
-        }
-    }
-    for (d, dl) in deny_write.iter().zip(&p.deny_write) {
-        for g in &write {
-            if within(d, &g.resolved) {
-                return Err(format!(
-                    "deny_write: {} lies inside {} {}; Landlock cannot carve a read-only path \
-                     out of a writable tree; refusing",
-                    dl.display(),
-                    g.field,
-                    g.stated.display()
-                ));
-            }
-            if within(&g.resolved, d) {
-                return Err(format!(
-                    "{}: {} resolves to {}, inside deny_write {}; refusing",
-                    g.field,
-                    g.stated.display(),
-                    g.resolved.display(),
-                    dl.display()
-                ));
-            }
-        }
-    }
+    let denied = |stated: &[PathBuf]| -> Vec<Denied> {
+        stated
+            .iter()
+            .map(|d| Denied {
+                stated: d.clone(),
+                resolved: resolve(d),
+            })
+            .collect()
+    };
+    check_carve_outs(&read, &write, &denied(&p.deny_read), &denied(&p.deny_write))
+        .map_err(|e| e.to_string())?;
     Ok(Plan {
         read,
         write,
@@ -1031,6 +1192,59 @@ mod tests {
         assert!(plan(&profile(&t, body)).is_err());
     }
 
+    #[test]
+    fn carve_refusals_name_the_paths() {
+        let g = |field, s: &str, r: &str| Grant {
+            field,
+            stated: s.into(),
+            resolved: r.into(),
+        };
+        let d = |s: &str, r: &str| Denied {
+            stated: s.into(),
+            resolved: r.into(),
+        };
+        let e = check_carve_outs(
+            &[g("read", "/h", "/h")],
+            &[],
+            &[d("/h/.ssh", "/h/.ssh")],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "deny_read: /h/.ssh lies inside read /h (resolved: /h/.ssh in /h); Landlock cannot \
+             carve a denied path out of a granted tree; refusing"
+        );
+        let e = check_carve_outs(&[], &[g("write", "/r", "/r")], &[], &[d("/r/.c", "/r/.c")])
+            .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "deny_write: /r/.c lies inside write /r; Landlock cannot carve a read-only path out \
+             of a writable tree; refusing"
+        );
+        let e = check_carve_outs(
+            &[g("read", "/u/k", "/h/.ssh/k")],
+            &[],
+            &[d("/h/.ssh", "/h/.ssh")],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "read: /u/k resolves to /h/.ssh/k, inside deny_read /h/.ssh; refusing"
+        );
+        assert_eq!(check_carve_outs(&[], &[], &[], &[]), Ok(()));
+        // With a read grant listed first, a violation by the write grant names the write grant.
+        let e = check_carve_outs(
+            &[g("read", "/u", "/u")],
+            &[g("write", "/h", "/h")],
+            &[d("/h/.ssh", "/h/.ssh")],
+            &[],
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("lies inside write /h "), "{e}");
+    }
+
     // rivet: verifies REQ-ZW-008
     #[test]
     fn deny_write_inside_write_refuses() {
@@ -1527,6 +1741,192 @@ mod proofs {
     #[kani::unwind(30)]
     fn socket_verdict_follows_the_profile_aarch64() {
         socket_verdict_follows_the_profile(AARCH64);
+    }
+
+    /// A short absolute path in normal form over {'/', 'a', 'b'}: "/", "/a", "/ab", "/a/b", ...
+    /// (no repeated or trailing separator, as `normalize` and `canonicalize` produce). Enough for
+    /// equal paths, nesting, and siblings sharing a byte prefix ("/a" vs "/ab", which must not
+    /// count as nested). Kept on the stack: no allocation for CBMC to model.
+    fn any_normal_path() -> ([u8; 4], usize) {
+        let len: usize = kani::any();
+        kani::assume((1..=4).contains(&len));
+        let mut bytes = [b'/'; 4];
+        for b in bytes.iter_mut().skip(1) {
+            let c: u8 = kani::any();
+            kani::assume(c == b'/' || c == b'a' || c == b'b');
+            *b = c;
+        }
+        for i in 1..len {
+            kani::assume(!(bytes[i] == b'/' && bytes[i - 1] == b'/'));
+        }
+        kani::assume(len == 1 || bytes[len - 1] != b'/');
+        (bytes, len)
+    }
+
+    fn as_path(p: &([u8; 4], usize)) -> &Path {
+        use std::os::unix::ffi::OsStrExt;
+        Path::new(std::ffi::OsStr::from_bytes(&p.0[..p.1]))
+    }
+
+    /// Lemma: two ancestors of the same path are nested one in the other. This is what lets
+    /// the carve-out rules, which only compare grants with denied paths, speak for every path
+    /// beneath them.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn ancestors_of_a_path_are_nested() {
+        let (x, a, b) = (any_normal_path(), any_normal_path(), any_normal_path());
+        let (x, a, b) = (as_path(&x), as_path(&a), as_path(&b));
+        if within(x, a) && within(x, b) {
+            assert!(within(a, b) || within(b, a));
+        }
+        kani::cover!(within(x, a) && within(x, b) && a != b);
+    }
+
+    /// REQ-ZW-008, end to end: if the carve-out rules accept the profile, then for every path x
+    /// beneath a denied path, no write grant covers x, and a read grant covers x only as a read
+    /// exception the profile stated inside that deny_read. Landlock, which only grants, then
+    /// denies x. Stated and resolved paths vary independently (symlink aliasing).
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn accepted_profiles_leave_every_denied_path_denied() {
+        let raw: [([u8; 4], usize); 9] = [
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+        ];
+        let view = |field, i: usize| PathView {
+            field,
+            stated: as_path(&raw[i]),
+            resolved: as_path(&raw[i + 1]),
+        };
+        let (r, w) = (view("read", 0), view("write", 2));
+        let (dr, dw) = (view("deny_read", 4), view("deny_write", 6));
+        let x = as_path(&raw[8]);
+        let accepted = first_carve_violation(&[r], &[w], &[dr], &[dw]).is_none();
+        if accepted && within(x, dr.resolved) {
+            assert!(
+                !within(x, w.resolved),
+                "a write grant covers a deny_read path"
+            );
+            assert!(
+                !within(x, r.resolved)
+                    || (within(r.stated, dr.stated) && !within(dr.stated, r.stated)),
+                "a read grant covers a deny_read path without a stated exception"
+            );
+        }
+        if accepted && within(x, dw.resolved) {
+            assert!(
+                !within(x, w.resolved),
+                "a write grant covers a deny_write path"
+            );
+        }
+        kani::cover!(
+            accepted && within(x, dr.resolved),
+            "a denied path under an accepted profile"
+        );
+        kani::cover!(
+            accepted && within(x, dr.resolved) && within(x, r.resolved),
+            "the stated read exception"
+        );
+        kani::cover!(!accepted, "refused");
+    }
+
+    /// Vacuity control: a checker without the deny_write rules must be caught.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::should_panic]
+    fn planted_deny_write_rules_dropped() {
+        let (a, b, c, d, e) = (
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+        );
+        let w = PathView {
+            field: "write",
+            stated: as_path(&a),
+            resolved: as_path(&b),
+        };
+        let dw = PathView {
+            field: "deny_write",
+            stated: as_path(&c),
+            resolved: as_path(&d),
+        };
+        let x = as_path(&e);
+        // The real rules with the deny_write list withheld: a checker that forgot them.
+        if first_carve_violation(&[], &[w], &[], &[]).is_none() && within(x, dw.resolved) {
+            assert!(!within(x, w.resolved));
+        }
+    }
+
+    /// Vacuity control: a checker that accepts any read inside a deny_read (the "stated" test
+    /// skipped, by naming the grant so the real rule treats it as a write would be stricter;
+    /// the lax rule is spelled out instead) must be caught.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::should_panic]
+    fn planted_read_exception_unconditional() {
+        let (a, b, c, d, e) = (
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+        );
+        let r = PathView {
+            field: "read",
+            stated: as_path(&a),
+            resolved: as_path(&b),
+        };
+        let dr = PathView {
+            field: "deny_read",
+            stated: as_path(&c),
+            resolved: as_path(&d),
+        };
+        let x = as_path(&e);
+        let lax_accepts = !within(dr.resolved, r.resolved);
+        if lax_accepts && within(x, dr.resolved) {
+            assert!(
+                !within(x, r.resolved)
+                    || (within(r.stated, dr.stated) && !within(dr.stated, r.stated))
+            );
+        }
+    }
+
+    /// Vacuity control: dropping the "deny under a grant" rule must be caught.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::should_panic]
+    fn planted_deny_under_grant_unchecked() {
+        let (a, b, c, d, e) = (
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+        );
+        let w = PathView {
+            field: "write",
+            stated: as_path(&a),
+            resolved: as_path(&b),
+        };
+        let dr = PathView {
+            field: "deny_read",
+            stated: as_path(&c),
+            resolved: as_path(&d),
+        };
+        let x = as_path(&e);
+        let lax_accepts = !within(w.resolved, dr.resolved);
+        if lax_accepts && within(x, dr.resolved) {
+            assert!(!within(x, w.resolved));
+        }
     }
 
     /// DD-ZW-003, REQ-ZW-005/006/009: for every kernel ABI and every network mode, a channel the

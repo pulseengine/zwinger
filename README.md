@@ -64,8 +64,9 @@ Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes o
 - for x86_64 and aarch64 in every socket mode, the filter's verdict equals its specification for every syscall number and argument, and the program is well formed;
 - from any kernel ABI and network mode, `socket(2)` is allowed exactly as REQ-ZW-005, REQ-ZW-006 and REQ-ZW-009 state;
 - for every ABI, the backend never opens a channel the profile did not state and never asks Landlock for a right the kernel lacks.
+- if the carve-out rules accept a profile, every path beneath a `deny_read` or `deny_write` stays uncovered by the grants Landlock receives, except a read exception stated inside that `deny_read` (stated and resolved paths vary independently, so symlink aliasing is included).
 
-Eight planted bugs must each be rejected, so a proof that stopped looking fails the job. The trusted base is the classic-BPF model in `bpf_run`, the shared syscall constants and Kani/CBMC; `tests/linux.rs` runs the same filter in real kernels.
+Eleven planted bugs must each be rejected, so a proof that stopped looking fails the job. The trusted base is the classic-BPF model in `bpf_run`, the shared syscall constants, `within` (checked exhaustively against `Path::starts_with` by unit test) and Kani/CBMC; `tests/linux.rs` runs the same filter in real kernels.
 
 ## Releases
 

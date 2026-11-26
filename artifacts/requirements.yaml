@@ -277,7 +277,7 @@ artifacts:
     status: implemented
     method: analysis
     description: >
-      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 19 harnesses over the shipped
+      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 24 harnesses over the shipped
       code in src/linux.rs mod proofs. For x86_64 and aarch64 in all four socket modes, the
       seccomp program is well formed (every instruction in the emitted subset, every jump inside
       the program, a ret last) and its verdict equals seccomp_spec for every 32-bit audit_arch,
@@ -292,7 +292,17 @@ artifacts:
       bpf_run (this repository's classic-BPF model; the kernel interpreter is checked by
       tests/linux.rs), the shared syscall constants, and Kani/CBMC. The spec was reviewed against
       REQ-ZW-005/006/009 by a separate reviewer before it was relied on.
+      Carve-out rules (REQ-ZW-008): for normal-form paths, two ancestors of a path are nested
+      (lemma), and if first_carve_violation accepts a profile then every path beneath a denied
+      path stays uncovered by any write grant and by any read grant other than a read exception
+      stated inside that deny_read, with stated and resolved paths varying independently; three
+      planted-bug controls (deny_write rules dropped, read exception unconditional, deny under a
+      grant unchecked) must fail. Their domain is normal paths of up to 4 bytes over {'/', 'a',
+      'b'}; within() itself is checked against Path::starts_with (after normalize) for every pair
+      of paths up to 5 bytes over {'/', 'a', 'b', '.'} by unit test.
     links:
+      - type: verifies
+        target: REQ-ZW-008
       - type: verifies
         target: REQ-ZW-005
       - type: verifies
