@@ -101,9 +101,30 @@ impl fmt::Display for ProfileError {
 
 impl std::error::Error for ProfileError {}
 
-/// `inner` equals `outer` or lies beneath it, compared by path components.
+/// `p` in normal form: its components collected back into a path. Repeated separators collapse,
+/// `.` segments vanish (except a leading `.` of a relative path), a trailing separator goes,
+/// `..` stays. Profile paths are normalized when the profile is parsed, and resolved paths are
+/// normal already, so every path the rules compare is in this form.
+pub fn normalize(p: &Path) -> PathBuf {
+    p.components().collect()
+}
+
+/// `inner` equals `outer` or lies beneath it, for paths in normal form (`normalize`): `outer`
+/// is a byte prefix of `inner` that ends at a component boundary, or `outer` is the root (which
+/// contains every absolute path) or empty (no components, so a prefix of everything). On normal
+/// paths this is exactly `Path::starts_with`; a unit test checks `within(normalize(a),
+/// normalize(b)) == a.starts_with(b)` for every pair of paths up to 5 bytes over
+/// {'/', 'a', 'b', '.'}. It is a single comparison so the Kani proofs can reason about it.
 pub fn within(inner: &Path, outer: &Path) -> bool {
-    inner.starts_with(outer)
+    use std::os::unix::ffi::OsStrExt;
+    let (i, o) = (inner.as_os_str().as_bytes(), outer.as_os_str().as_bytes());
+    if o.is_empty() {
+        return true;
+    }
+    if o == b"/" {
+        return i.first() == Some(&b'/');
+    }
+    i.len() >= o.len() && i[..o.len()] == *o && (i.len() == o.len() || i[o.len()] == b'/')
 }
 
 impl Profile {
@@ -113,8 +134,21 @@ impl Profile {
     }
 
     pub fn parse(path: &Path, text: &str) -> Result<Self, ProfileError> {
-        let p: Profile =
+        let mut p: Profile =
             toml::from_str(text).map_err(|e| ProfileError::Parse(path.into(), e.to_string()))?;
+        // Normal form at the boundary: every later comparison (`within`) relies on it.
+        for list in [
+            &mut p.read,
+            &mut p.write,
+            &mut p.read_if_present,
+            &mut p.write_if_present,
+            &mut p.deny_read,
+            &mut p.deny_write,
+        ] {
+            for path in list.iter_mut() {
+                *path = normalize(path);
+            }
+        }
         p.validate()
             .map_err(|e| ProfileError::Invalid(path.into(), e))?;
         Ok(p)
@@ -481,5 +515,50 @@ allow_local_binding = true
             e.contains("write_if_present: /s/x lies inside deny_read /s"),
             "{e}"
         );
+    }
+}
+
+#[cfg(test)]
+mod within_tests {
+    use super::{normalize, within};
+    use std::path::Path;
+
+    /// Every string up to `max` bytes over the alphabet.
+    fn all_paths(max: usize) -> Vec<String> {
+        let mut out = vec![String::new()];
+        let mut frontier = vec![String::new()];
+        for _ in 0..max {
+            let mut next = Vec::new();
+            for p in &frontier {
+                for c in ['/', 'a', 'b', '.'] {
+                    next.push(format!("{p}{c}"));
+                }
+            }
+            out.extend(next.iter().cloned());
+            frontier = next;
+        }
+        out
+    }
+
+    /// The Kani proofs rely on `within` of normal forms meaning `Path::starts_with` of the raw
+    /// paths: checked exhaustively for
+    /// every pair of paths up to 5 bytes over {'/', 'a', 'b', '.'} (1365 paths, ~1.9M pairs).
+    #[test]
+    fn within_agrees_with_path_starts_with() {
+        let paths = all_paths(5);
+        let mut checked = 0usize;
+        for a in &paths {
+            for b in &paths {
+                let (pa, pb) = (Path::new(a), Path::new(b));
+                assert_eq!(
+                    within(&normalize(pa), &normalize(pb)),
+                    pa.starts_with(pb),
+                    "within({a:?}, {b:?})"
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, paths.len() * paths.len());
+        assert_eq!(paths.len(), 1365);
     }
 }
