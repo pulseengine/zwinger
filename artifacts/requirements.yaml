@@ -5,8 +5,10 @@ artifacts:
     status: approved
     description: >
       A missing, unreadable or malformed profile, an unknown key, an empty name, a relative or
-      '..' path, a writable path inside a denied one, a wildcard host, or the absence of an
-      enforcement backend refuses the session with exit 78. Nothing falls back to "allow".
+      '..' path, a contradictory pair of path entries, a host that is not an exact name, a
+      malformed Mach service name, a profile the platform backend cannot enforce as written, or
+      the absence of an enforcement backend refuses the session with exit 78. Nothing falls back
+      to "allow".
     fields:
       origin: "design goal: a session is never unconfined by accident"
 
@@ -15,8 +17,11 @@ artifacts:
     title: "One typed per-session profile drives every platform"
     status: approved
     description: >
-      A TOML profile (name, write, deny_read, network.allow, mach_lookup) with unknown keys
-      rejected; the same file is enforced on macOS and Linux.
+      A TOML profile (name, read, write, deny_read, deny_write, network.allow,
+      network.allow_local_binding, mach_lookup) with unknown keys and wrong types rejected and
+      every field refusable; the same file is enforced on macOS and Linux. The fields follow what
+      the sandbox profiles in use today express: read and write allow lists, denied paths inside
+      them, an egress host list, loopback binding and Mach lookups.
 
   - id: REQ-ZW-003
     type: requirement
@@ -29,11 +34,104 @@ artifacts:
 
   - id: REQ-ZW-004
     type: requirement
-    title: "Linux and Pi: enforcement through Landlock and seccomp"
+    title: "Linux: the filesystem part of the profile is enforced through Landlock"
+    status: approved
+    description: >
+      zwinger run on Linux restricts itself with a Landlock ruleset (read trees: read and
+      execute; write trees: every filesystem right) and then execs the session, so the session and
+      every descendant inherit it. Below Landlock ABI 3 (Linux 6.2), which cannot restrict
+      truncate(2), it refuses with exit 78. The ruleset must report fully enforced and
+      no_new_privs must be set, or it refuses. Inherited descriptors above 2 are closed on exec.
+
+  - id: REQ-ZW-005
+    type: requirement
+    title: "Linux: no egress, and network allowances Landlock cannot express are refused"
+    status: approved
+    description: >
+      network.mode = "none" (the default) means no egress: a seccomp filter fails socket(2) with
+      EACCES for every family except AF_UNIX and fails io_uring with EPERM; where the ABI has them, Landlock
+      also denies TCP (ABI 4) and UDP (ABI 10). A foreign syscall ABI (i386 on x86_64) kills the
+      process and x32 calls fail with EPERM. A non-empty network.allow or allow_local_binding = true is
+      refused, because Landlock filters ports, not hosts or addresses, and the backend has no
+      filtering proxy.
+
+  - id: REQ-ZW-006
+    type: requirement
+    title: "Linux: UNIX sockets and the inherited terminal cannot reach outside the session"
+    status: approved
+    description: >
+      socket(AF_UNIX) is allowed only when Landlock confines where it can connect: pathname
+      sockets through ResolveUnix (ABI 9) granted on write trees only, abstract sockets and
+      signals through scoping (ABI 6). On older kernels socket(AF_UNIX) fails with EACCES;
+      socketpair(2) stays available. ioctl(2) with TIOCSTI or TIOCLINUX fails with EPERM on
+      every fd, because fds 0-2 may be the caller's terminal and pushing input into it would run
+      commands in the unconfined shell after the session exits.
+
+  - id: REQ-ZW-007
+    type: requirement
+    title: "Raspberry Pi: the Linux backend is checked on a Raspberry Pi 5 kernel"
     status: draft
     description: >
-      The same profile enforced with Landlock (filesystem, TCP ports) and seccomp, checked on a
-      Raspberry Pi 5 kernel.
+      The aarch64 seccomp table and the Landlock tests run on a Raspberry Pi 5 kernel. CI covers
+      a hosted aarch64 runner today, which is not a Pi kernel.
+
+  - id: REQ-ZW-008
+    type: requirement
+    title: "A backend refuses a profile it cannot enforce as written"
+    status: approved
+    description: >
+      On Linux: a granted (read or write) path that does not exist, a deny_read inside a granted
+      tree or a deny_write inside a write tree (Landlock cannot carve a subtree out of a granted
+      one), and a granted path that resolves through a symlink into a denied tree are refused
+      with exit 78 before anything runs. Paths are compared after resolving symlinks, including
+      above denied paths that do not exist yet.
+
+  - id: REQ-ZW-009
+    type: requirement
+    title: "Allowances the backend cannot confine are stated explicitly and named at startup"
+    status: approved
+    description: >
+      network.mode = "unfiltered" allows every socket family but AF_UNIX and sets no network
+      rules; network.unix_sockets = "unfiltered" allows socket(AF_UNIX) on every ABI and drops
+      Landlock's UNIX confinement (ResolveUnix, abstract-socket scoping). Neither is a default,
+      neither combines with network.allow or allow_local_binding, and an unknown value is
+      refused. read_if_present and write_if_present grants are skipped when the path does not
+      exist, follow every rule of read and write otherwise, and are listed as skipped at startup.
+
+  - id: REQ-ZW-010
+    type: requirement
+    title: "A denial can be traced to the profile"
+    status: approved
+    description: >
+      zwinger run writes one startup line to stderr naming the profile, the Landlock ABI
+      applied, the grant counts, skipped optional paths, the network and UNIX-socket modes,
+      whether denials are audit-logged and what the profile leaves unconfined on this kernel. The
+      session gets ZWINGER_PROFILE and ZWINGER_ABI in its environment. On ABI 7 and later
+      Landlock logs denials after the exec (log_new_exec). zwinger explain PROFILE PATH|tcp:PORT
+      answers whether the Linux backend allows an access and names the grant that decides it.
+
+  - id: REQ-ZW-011
+    type: requirement
+    title: "A template profile confines a self-hosted GitHub Actions runner"
+    status: approved
+    description: >
+      profiles/github-runner.toml confines a runner's paths with {{home}} as its only
+      placeholder: system trees and the home read-only, work, temp, log and cache directories
+      writable, the network unfiltered. Unsubstituted, it fails zwinger check. The runner's home
+      is not writable, so a job cannot replace the runner binaries for later jobs.
+
+  - id: REQ-ZW-012
+    type: requirement
+    title: "Releases are signed static Linux binaries a consumer can pin by sha256"
+    status: approved
+    description: >
+      A v* tag whose name matches Cargo.toml publishes static musl archives for x86_64 and
+      aarch64 Linux, a CycloneDX SBOM and a docs archive, all listed in one SHA256SUMS.txt
+      signed with cosign keyless under the release.yml identity, with SLSA build provenance on
+      the archives. Each packaged binary is checked before upload: no dynamic loader or shared
+      library, --version equal to the tag, and it confines a process on the build runner's
+      kernel. The command line follows the pulseengine CLI conventions (--version and -V print
+      "zwinger SEMVER", --help exits 0, an unknown flag or command exits 2).
 
   - id: DD-ZW-001
     type: design-decision
@@ -69,6 +167,138 @@ artifacts:
         target: REQ-ZW-003
       - type: satisfies
         target: REQ-ZW-004
+      - type: satisfies
+        target: REQ-ZW-007
+
+  - id: DD-ZW-003
+    type: design-decision
+    title: "Linux: decide from the kernel's Landlock ABI, tighten rather than degrade"
+    status: approved
+    description: >
+      The Linux backend reads the kernel's Landlock ABI once and builds a ruleset that handles
+      every right of that ABI under the crate's HardRequirement level, never best effort. Where
+      an older ABI leaves a channel open that the profile closes, the backend either refuses (ABI
+      below 3) or closes the channel with seccomp (all non-UNIX sockets, io_uring, and AF_UNIX
+      below ABI 9). The seccomp program is a classic-BPF filter of at most 20 instructions written out in
+      src/linux.rs and run through an interpreter in its unit tests on every platform.
+    decision: >
+      Landlock (landlock crate 0.4.8) for paths and ports; a hand-written seccomp filter for
+      socket families and io_uring; refuse host allow lists, loopback binding and carve-outs.
+    rationale: >
+      A best-effort ruleset reports "partially enforced" where the profile promised a closed
+      channel, which is a fail-open path. A hand-written filter keeps the whole program
+      reviewable and testable without a kernel. Known gaps that remain, stated here so they are
+      not mistaken for coverage: Landlock does not restrict chmod, chown, utime or xattr changes
+      on paths outside the granted trees; the syscall numbers and constants in src/linux.rs are
+      shared by the program and its Kani spec, so the proofs cannot catch a wrong number (they
+      were checked against the Linux UAPI headers in review, and tests/linux.rs runs the filter
+      in real kernels); below ABI 6 signals to processes outside the session
+      are not scoped; below ABI 5 device ioctls are not restricted; host-level egress filtering
+      needs a proxy that does not exist yet; paths are checked and then opened in two steps,
+      which only a process already unconfined as the same user could race. The terminal
+      injection ioctls are not covered end to end: on a terminal that is not the caller's
+      controlling one the kernel itself returns EPERM, so a probe cannot tell the two apart.
+    links:
+      - type: satisfies
+        target: REQ-ZW-004
+      - type: satisfies
+        target: REQ-ZW-005
+      - type: satisfies
+        target: REQ-ZW-006
+      - type: satisfies
+        target: REQ-ZW-008
+
+  - id: DD-ZW-004
+    type: design-decision
+    title: "CI runners: confine paths, leave the network unfiltered, disable self-update"
+    status: approved
+    description: >
+      Self-hosted runners run under zwinger with the github-runner template. Measured on the CI
+      host (2026-11-26, ss snapshots under load): 387 of 387 remote peers were on port 443, but
+      sccache and Bazel servers listen on loopback ports, some ephemeral.
+    decision: >
+      network.mode = "unfiltered" for runners; the runner home read-only with listed writable
+      directories; runners configured with --disableupdate and updated by redeploy.
+    rationale: >
+      Landlock ABI 4 filters TCP by port, not address: a rule that admits ephemeral loopback
+      ports admits every remote port too, so a port list would claim a confinement it does not
+      deliver. A self-updating runner needs its home writable, which would let a job replace
+      Runner.Worker for every later job. Not protected, stated so it is not mistaken for
+      coverage: the runner's own .runner and .credentials, which Runner.Listener reads and
+      every job inherits access to.
+    links:
+      - type: satisfies
+        target: REQ-ZW-009
+      - type: satisfies
+        target: REQ-ZW-010
+      - type: satisfies
+        target: REQ-ZW-011
+
+  - id: VER-ZW-004
+    type: verification
+    title: "Release pipeline exercised on pull requests; signature verified as a consumer would"
+    status: implemented
+    method: test
+    description: >
+      .github/workflows/release.yml runs on pull requests that touch the release path: the
+      version guard, both native musl builds, the static-binary check and the packaged-tarball
+      smoke test (version, usage exit 2, refusal exit 78, a confined write inside and a refused
+      read outside). On a tag it also signs the sums and verifies the signature with the
+      identity consumers pin before uploading. tests/cli.rs checks --version, -V, --help and
+      exit 2 for unknown flags and commands.
+    links:
+      - type: verifies
+        target: REQ-ZW-012
+
+  - id: DD-ZW-005
+    type: design-decision
+    title: "Release: synth's signed pipeline, static musl, Linux only for now"
+    status: approved
+    description: >
+      release.yml follows pulseengine/synth's Track A pipeline (sums with SBOM and docs
+      inside, SLSA provenance, cosign keyless) for x86_64 and aarch64 musl, each built natively
+      so its smoke test executes the tarball it uploads.
+    decision: >
+      Ship static musl Linux binaries only; add macOS when its backend exists. The pipeline also
+      runs on pull requests that touch the release path, without signing or publishing.
+    rationale: >
+      A confinement launcher should not depend on the host's dynamic loader or glibc version,
+      and the consumers (CI runner hosts on Ubuntu 24.04, a Raspberry Pi) are Linux. A macOS
+      binary today would only refuse to run. Exercising the pipeline on pull requests means a
+      tag is not its first run. Not covered yet: crates.io and npm distribution (Cargo.toml has
+      publish = false) and inclusion in a varve layer.
+    links:
+      - type: satisfies
+        target: REQ-ZW-012
+
+  - id: VER-ZW-005
+    type: verification
+    title: "Kani proofs: seccomp program, profile-to-verdict, enforcement decisions"
+    status: implemented
+    method: analysis
+    description: >
+      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 19 harnesses over the shipped
+      code in src/linux.rs mod proofs. For x86_64 and aarch64 in all four socket modes, the
+      seccomp program is well formed (every instruction in the emitted subset, every jump inside
+      the program, a ret last) and its verdict equals seccomp_spec for every 32-bit audit_arch,
+      nr, args[0] and args[1]. From any kernel ABI >= 3 and any network and UNIX-socket mode,
+      the filter's verdict on socket(2) is the one the requirement text states. For every i32
+      ABI, enforcement() refuses below 3, allows network sockets only under mode unfiltered and
+      AF_UNIX only when Landlock confines it or the profile opts out, and never requests a
+      Landlock right the ABI lacks. Inputs are symbolic over their full range; loop unwinding is
+      bounded at 30 with unwinding assertions on. Eight planted-bug controls (TIOCSTI, TIOCLINUX,
+      x32, io_uring, EPERM to allow, EACCES to allow, the arch check, the AF_UNIX test) must each
+      fail (should_panic). cover! statements show every verdict is reachable. Trusted base:
+      bpf_run (this repository's classic-BPF model; the kernel interpreter is checked by
+      tests/linux.rs), the shared syscall constants, and Kani/CBMC. The spec was reviewed against
+      REQ-ZW-005/006/009 by a separate reviewer before it was relied on.
+    links:
+      - type: verifies
+        target: REQ-ZW-005
+      - type: verifies
+        target: REQ-ZW-006
+      - type: verifies
+        target: REQ-ZW-009
 
   - id: VER-ZW-001
     type: verification
@@ -76,12 +306,73 @@ artifacts:
     status: implemented
     method: test
     description: >
-      src/profile.rs tests (missing file, unknown key, missing or blank name, relative and '..'
-      paths, write inside deny_read, wildcard host) and tests/cli.rs (check refuses a missing
-      profile with 78; run never executes the command). Mutation-checked 2026-11-25: removing
-      the wildcard check or letting run execute the command each turns a test red.
+      src/profile.rs tests: missing file, unknown key, wrong type, missing or blank name, relative
+      and '..' paths in each of the four path fields, write inside deny_read or deny_write, read
+      equal to deny_read, non-exact hosts and Mach service names, and the refusal text.
+      tests/cli.rs: check refuses a missing profile with 78; on platforms without a backend, run
+      never executes the command. Mutation-tested with cargo-mutants in CI (mutants job, zero
+      missed; equivalent mutants listed in .cargo/mutants.toml).
     links:
       - type: verifies
         target: REQ-ZW-001
       - type: verifies
         target: REQ-ZW-002
+
+  - id: VER-ZW-002
+    type: verification
+    title: "Linux planner tests: ABI decisions, refusals, seccomp program"
+    status: implemented
+    method: test
+    description: >
+      src/linux.rs tests, which run on every platform: ABI 0..2 refused and the features of ABI
+      3..10 switched on at their versions; missing granted paths, carve-outs, symlink aliasing in
+      both directions, host lists and loopback binding refused; the seccomp program executed in a
+      classic-BPF interpreter for x86_64 and aarch64 over socket families, io_uring, the TIOCSTI and
+      TIOCLINUX ioctls against other ioctl requests, x32 and a foreign architecture, in all four
+      socket-mode combinations; the network and UNIX-socket modes, skipped optional grants, the
+      startup line, explain, and the runner template (refused unsubstituted, planned
+      substituted). src/profile.rs and src/linux.rs are mutation-tested in CI with zero missed.
+    links:
+      - type: verifies
+        target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-010
+      - type: verifies
+        target: REQ-ZW-011
+      - type: verifies
+        target: REQ-ZW-004
+      - type: verifies
+        target: REQ-ZW-005
+      - type: verifies
+        target: REQ-ZW-006
+      - type: verifies
+        target: REQ-ZW-008
+
+  - id: VER-ZW-003
+    type: verification
+    title: "End-to-end confinement on CI kernels"
+    status: implemented
+    method: test
+    description: >
+      tests/linux.rs runs zwinger run on the CI runner's kernel (self-hosted x64, hosted
+      aarch64) and probes the session: writes inside the write tree succeed; writes, truncation
+      and reads outside it fail; an inherited descriptor does not leak; TCP and UDP egress,
+      AF_INET, AF_INET6 and AF_NETLINK sockets and io_uring are refused; AF_UNIX follows the
+      kernel ABI and a socket outside the profile is unreachable; unenforceable profiles exit 78
+      without running the command; mode unfiltered allows TCP while paths and AF_UNIX stay
+      confined; unix_sockets unfiltered reaches a socket outside the profile; the session sees
+      ZWINGER_PROFILE and ZWINGER_ABI and the startup line names the ABI and skipped paths.
+      Each refusal has an unconfined control that succeeds.
+    links:
+      - type: verifies
+        target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-010
+      - type: verifies
+        target: REQ-ZW-004
+      - type: verifies
+        target: REQ-ZW-005
+      - type: verifies
+        target: REQ-ZW-006
+      - type: verifies
+        target: REQ-ZW-008

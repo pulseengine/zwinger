@@ -1,0 +1,18 @@
+# cargo-mutants settings. CI (mutants job) runs src/profile.rs and src/linux.rs with zero missed
+# mutants allowed (REQ-ZW-002, REQ-ZW-005).
+
+exclude_re = [
+    # Equivalent mutants: RET_ERRNO and the errno value occupy disjoint bits, so `|` and `^`
+    # build the same seccomp return value. No test can tell them apart.
+    'replace \| with \^ in seccomp_(program|spec)',
+    # Kani-only code (cfg(kani)): unit tests never compile it, so cargo-mutants cannot judge it.
+    # Its potency is checked inside Kani by the planted-bug controls, which must each fail.
+    'proofs::',
+    'Program::as_mut_slice',
+    # Not mutation-gated: the kernel-facing half. Its refusal branches (a kernel without
+    # Landlock, a ruleset not fully enforced, a failing close_range or seccomp call) cannot be
+    # reached on a CI kernel that has the features. What it does enforce is checked end to end
+    # by tests/linux.rs; its decisions come from the planner, which is gated.
+    '\bconfine\b',
+    '\bkernel_abi\b',
+]
