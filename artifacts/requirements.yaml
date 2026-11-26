@@ -48,8 +48,8 @@ artifacts:
     title: "Linux: no egress, and network allowances Landlock cannot express are refused"
     status: approved
     description: >
-      An empty network.allow means no egress: a seccomp filter fails socket(2) with EACCES for
-      every family except AF_UNIX and fails io_uring with EPERM; where the ABI has them, Landlock
+      network.mode = "none" (the default) means no egress: a seccomp filter fails socket(2) with
+      EACCES for every family except AF_UNIX and fails io_uring with EPERM; where the ABI has them, Landlock
       also denies TCP (ABI 4) and UDP (ABI 10). A foreign syscall ABI (i386 on x86_64) kills the
       process and x32 calls fail. A non-empty network.allow or allow_local_binding = true is
       refused, because Landlock filters ports, not hosts or addresses, and the backend has no
@@ -85,6 +85,40 @@ artifacts:
       one), and a granted path that resolves through a symlink into a denied tree are refused
       with exit 78 before anything runs. Paths are compared after resolving symlinks, including
       above denied paths that do not exist yet.
+
+  - id: REQ-ZW-009
+    type: requirement
+    title: "Allowances the backend cannot confine are stated explicitly and named at startup"
+    status: approved
+    description: >
+      network.mode = "unfiltered" allows every socket family but AF_UNIX and sets no network
+      rules; network.unix_sockets = "unfiltered" allows socket(AF_UNIX) on every ABI and drops
+      Landlock's UNIX confinement (ResolveUnix, abstract-socket scoping). Neither is a default,
+      neither combines with network.allow or allow_local_binding, and an unknown value is
+      refused. read_if_present and write_if_present grants are skipped when the path does not
+      exist, follow every rule of read and write otherwise, and are listed as skipped at startup.
+
+  - id: REQ-ZW-010
+    type: requirement
+    title: "A denial can be traced to the profile"
+    status: approved
+    description: >
+      zwinger run writes one startup line to stderr naming the profile, the Landlock ABI
+      applied, the grant counts, skipped optional paths, the network and UNIX-socket modes,
+      whether denials are audit-logged and what the profile leaves unconfined on this kernel. The
+      session gets ZWINGER_PROFILE and ZWINGER_ABI in its environment. On ABI 7 and later
+      Landlock logs denials after the exec (log_new_exec). zwinger explain PROFILE PATH|tcp:PORT
+      answers whether the Linux backend allows an access and names the grant that decides it.
+
+  - id: REQ-ZW-011
+    type: requirement
+    title: "A template profile confines a self-hosted GitHub Actions runner"
+    status: approved
+    description: >
+      profiles/github-runner.toml confines a runner's paths with {{home}} as its only
+      placeholder: system trees and the home read-only, work, temp, log and cache directories
+      writable, the network unfiltered. Unsubstituted, it fails zwinger check. The runner's home
+      is not writable, so a job cannot replace the runner binaries for later jobs.
 
   - id: DD-ZW-001
     type: design-decision
@@ -158,6 +192,32 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-008
 
+  - id: DD-ZW-004
+    type: design-decision
+    title: "CI runners: confine paths, leave the network unfiltered, disable self-update"
+    status: approved
+    description: >
+      Self-hosted runners run under zwinger with the github-runner template. Measured on the CI
+      host (2026-11-26, ss snapshots under load): 387 of 387 remote peers were on port 443, but
+      sccache and Bazel servers listen on loopback ports, some ephemeral.
+    decision: >
+      network.mode = "unfiltered" for runners; the runner home read-only with listed writable
+      directories; runners configured with --disableupdate and updated by redeploy.
+    rationale: >
+      Landlock ABI 4 filters TCP by port, not address: a rule that admits ephemeral loopback
+      ports admits every remote port too, so a port list would claim a confinement it does not
+      deliver. A self-updating runner needs its home writable, which would let a job replace
+      Runner.Worker for every later job. Not protected, stated so it is not mistaken for
+      coverage: the runner's own .runner and .credentials, which Runner.Listener reads and
+      every job inherits access to.
+    links:
+      - type: satisfies
+        target: REQ-ZW-009
+      - type: satisfies
+        target: REQ-ZW-010
+      - type: satisfies
+        target: REQ-ZW-011
+
   - id: VER-ZW-001
     type: verification
     title: "Profile and CLI fail-closed tests"
@@ -186,8 +246,17 @@ artifacts:
       3..10 switched on at their versions; missing granted paths, carve-outs, symlink aliasing in
       both directions, host lists and loopback binding refused; the seccomp program executed in a
       classic-BPF interpreter for x86_64 and aarch64 over socket families, io_uring, the TIOCSTI and
-      TIOCLINUX ioctls against other ioctl requests, x32 and a foreign architecture. Mutation-tested in CI with zero missed.
+      TIOCLINUX ioctls against other ioctl requests, x32 and a foreign architecture, in all four
+      socket-mode combinations; the network and UNIX-socket modes, skipped optional grants, the
+      startup line, explain, and the runner template (refused unsubstituted, planned
+      substituted). src/profile.rs and src/linux.rs are mutation-tested in CI with zero missed.
     links:
+      - type: verifies
+        target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-010
+      - type: verifies
+        target: REQ-ZW-011
       - type: verifies
         target: REQ-ZW-004
       - type: verifies
@@ -208,8 +277,15 @@ artifacts:
       and reads outside it fail; an inherited descriptor does not leak; TCP and UDP egress,
       AF_INET, AF_INET6 and AF_NETLINK sockets and io_uring are refused; AF_UNIX follows the
       kernel ABI and a socket outside the profile is unreachable; unenforceable profiles exit 78
-      without running the command. Each refusal has an unconfined control that succeeds.
+      without running the command; mode unfiltered allows TCP while paths and AF_UNIX stay
+      confined; unix_sockets unfiltered reaches a socket outside the profile; the session sees
+      ZWINGER_PROFILE and ZWINGER_ABI and the startup line names the ABI and skipped paths.
+      Each refusal has an unconfined control that succeeds.
     links:
+      - type: verifies
+        target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-010
       - type: verifies
         target: REQ-ZW-004
       - type: verifies

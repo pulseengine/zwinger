@@ -423,3 +423,67 @@ fn unenforceable_carve_outs_are_refused_end_to_end() {
     refused("deny_read = [\"@/r/public\"]\n");
     refused("deny_write = [\"@/w/settings.json\"]\n");
 }
+
+// rivet: verifies REQ-ZW-009
+#[test]
+fn unfiltered_network_allows_egress_but_paths_stay_confined() {
+    let sc = Scene::new("[network]\nmode = \"unfiltered\"\n");
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let script = format!(
+        "echo hi > /dev/tcp/127.0.0.1/{}",
+        l.local_addr().unwrap().port()
+    );
+    let o = sc.run(&bash(&script));
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("network: unfiltered"));
+    let f = sc.path("o/new");
+    assert!(!sc.run(&["/usr/bin/touch", s(&f)]).status.success());
+    assert!(
+        !f.exists(),
+        "unfiltered network must not open the filesystem"
+    );
+    let expect = if kernel_abi() >= zwinger::linux::UNIX_SOCKET_ABI {
+        0
+    } else {
+        libc::EACCES
+    };
+    let fam = libc::AF_UNIX.to_string();
+    assert_eq!(
+        probe(&sc, "socket", &fam).status.code(),
+        Some(expect),
+        "unix stays confined"
+    );
+}
+
+// rivet: verifies REQ-ZW-009
+#[test]
+fn unfiltered_unix_sockets_reach_sockets_outside_the_profile() {
+    // The opt-in does what it says: this is the documented hole, not a leak.
+    let sc = Scene::new("[network]\nunix_sockets = \"unfiltered\"\n");
+    let path = sc.path("o/agent.sock");
+    let _l = UnixListener::bind(&path).unwrap();
+    let o = probe(&sc, "unix_connect", s(&path));
+    assert_eq!(o.status.code(), Some(0));
+    let fam = libc::AF_INET.to_string();
+    assert_eq!(probe(&sc, "socket", &fam).status.code(), Some(libc::EACCES));
+}
+
+// rivet: verifies REQ-ZW-010
+#[test]
+fn session_sees_profile_and_abi_and_the_journal_line_names_them() {
+    let sc = Scene::new("write_if_present = [\"@/absent\"]\n");
+    let o = sc.run(&bash("echo \"$ZWINGER_PROFILE $ZWINGER_ABI\""));
+    assert!(o.status.success());
+    let abi = kernel_abi().min(zwinger::linux::MAX_KNOWN_ABI);
+    assert_eq!(String::from_utf8_lossy(&o.stdout), format!("e2e {abi}\n"));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.starts_with(&format!("zwinger: e2e confined: landlock abi {abi};")),
+        "{err}"
+    );
+    assert!(err.contains("network: none"), "{err}");
+    assert!(
+        err.contains(&format!("absent, skipped: {}", s(&sc.path("absent")))),
+        "{err}"
+    );
+}

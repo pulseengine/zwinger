@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use zwinger::{EXIT_REFUSED, profile::Profile};
 
-const USAGE: &str = "usage: zwinger check PROFILE\n       zwinger run PROFILE -- COMMAND [ARG...]";
+const USAGE: &str = "usage: zwinger check PROFILE\n       zwinger explain PROFILE PATH|tcp:PORT|udp:PORT\n       zwinger run PROFILE -- COMMAND [ARG...]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -22,6 +22,18 @@ fn main() -> ExitCode {
                 );
                 ExitCode::SUCCESS
             }
+            Err(e) => refuse(&e.to_string()),
+        },
+        Some("explain") if args.len() == 3 => match Profile::load(Path::new(&args[1])) {
+            Ok(p) => match zwinger::linux::plan(&p) {
+                Ok(plan) => {
+                    for line in zwinger::linux::explain(&p, &plan, &args[2]) {
+                        println!("{line}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => refuse(&e),
+            },
             Err(e) => refuse(&e.to_string()),
         },
         Some("run") if args.len() >= 4 && args[2] == "--" => {
@@ -48,22 +60,17 @@ fn main() -> ExitCode {
 #[cfg(target_os = "linux")]
 fn run(p: &Profile, cmd: &str, args: &[String]) -> ExitCode {
     use std::os::unix::process::CommandExt;
-    let enf = match zwinger::linux::confine(p) {
-        Ok(enf) => enf,
+    let (enf, plan) = match zwinger::linux::confine(p) {
+        Ok(c) => c,
         Err(e) => return refuse(&e),
     };
-    eprintln!(
-        "zwinger: {} confined: landlock abi {}, no egress, unix sockets {}",
-        p.name,
-        enf.abi,
-        if enf.unix_sockets {
-            "confined by landlock"
-        } else {
-            "refused"
-        }
-    );
+    eprintln!("{}", enf.summary(&p.name, &plan));
     // Only returns on failure; the session is already confined either way.
-    let err = std::process::Command::new(cmd).args(args).exec();
+    let err = std::process::Command::new(cmd)
+        .args(args)
+        .env("ZWINGER_PROFILE", &p.name)
+        .env("ZWINGER_ABI", enf.abi.to_string())
+        .exec();
     eprintln!("zwinger: cannot exec {cmd}: {err}");
     ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {
         127

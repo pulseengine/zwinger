@@ -65,3 +65,24 @@ fn run_never_starts_unconfined() {
 fn bad_usage_is_64() {
     assert_eq!(zwinger(&[]).status.code(), Some(64));
 }
+
+// rivet: verifies REQ-ZW-010
+#[test]
+fn explain_names_the_rule_for_a_path_and_a_port() {
+    let dir = std::env::temp_dir().join(format!("zwinger-explain-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("w")).unwrap();
+    let p = profile(&format!(
+        "name = \"s\"\nwrite = [{:?}]\n",
+        dir.join("w").to_str().unwrap()
+    ));
+    let f = dir.join("w/f");
+    let o = zwinger(&["explain", p.0.to_str().unwrap(), f.to_str().unwrap()]);
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(out.contains("write: allowed (write "), "{out}");
+    let o = zwinger(&["explain", p.0.to_str().unwrap(), "tcp:443"]);
+    assert!(String::from_utf8_lossy(&o.stdout).starts_with("tcp port 443: denied"));
+    let o = zwinger(&["explain", "/nonexistent/z.toml", "/x"]);
+    assert_eq!(o.status.code(), Some(78));
+    let _ = std::fs::remove_dir_all(&dir);
+}

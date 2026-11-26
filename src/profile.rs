@@ -25,6 +25,13 @@ pub struct Profile {
     /// Trees the session may write (and read). Everything else is read-only or denied.
     #[serde(default)]
     pub write: Vec<PathBuf>,
+    /// Like `read`, but a path that does not exist is skipped instead of refused (per-host
+    /// directories such as `/lib32` or a tool cache only some machines have).
+    #[serde(default)]
+    pub read_if_present: Vec<PathBuf>,
+    /// Like `write`, but a path that does not exist is skipped instead of refused.
+    #[serde(default)]
+    pub write_if_present: Vec<PathBuf>,
     /// Paths the session may not read at all (secrets, other sessions' tokens).
     #[serde(default)]
     pub deny_read: Vec<PathBuf>,
@@ -43,12 +50,36 @@ pub struct Profile {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
+    /// `none` (default): no egress except the hosts in `allow`. `unfiltered`: the network is not
+    /// confined at all; only paths are. A profile has to say `unfiltered` to get it.
+    #[serde(default)]
+    pub mode: NetworkMode,
     /// Exact host names the session may connect to. Empty means no egress.
     #[serde(default)]
     pub allow: Vec<String>,
     /// Whether the session may bind and listen on loopback ports.
     #[serde(default)]
     pub allow_local_binding: bool,
+    /// `confined` (default): UNIX sockets only where the backend can confine where they connect.
+    /// `unfiltered`: `socket(AF_UNIX)` is allowed and its connections are not confined.
+    #[serde(default)]
+    pub unix_sockets: UnixSockets,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetworkMode {
+    #[default]
+    None,
+    Unfiltered,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UnixSockets {
+    #[default]
+    Confined,
+    Unfiltered,
 }
 
 #[derive(Debug)]
@@ -90,13 +121,31 @@ impl Profile {
     }
 
     /// The path lists by field name, in a fixed order.
-    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 4] {
+    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 6] {
         [
             ("read", &self.read),
             ("write", &self.write),
+            ("read_if_present", &self.read_if_present),
+            ("write_if_present", &self.write_if_present),
             ("deny_read", &self.deny_read),
             ("deny_write", &self.deny_write),
         ]
+    }
+
+    /// Every read grant with its field name: `read`, then `read_if_present`.
+    pub fn reads(&self) -> impl Iterator<Item = (&'static str, &PathBuf)> {
+        let r = self.read.iter().map(|p| ("read", p));
+        r.chain(self.read_if_present.iter().map(|p| ("read_if_present", p)))
+    }
+
+    /// Every write grant with its field name: `write`, then `write_if_present`.
+    pub fn writes(&self) -> impl Iterator<Item = (&'static str, &PathBuf)> {
+        let w = self.write.iter().map(|p| ("write", p));
+        w.chain(
+            self.write_if_present
+                .iter()
+                .map(|p| ("write_if_present", p)),
+        )
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -114,26 +163,45 @@ impl Profile {
             }
         }
         // A writable tree inside a denied one would re-open the denied tree for writing.
-        for w in &self.write {
+        for (field, w) in self.writes() {
             if let Some(d) = self.deny_read.iter().find(|d| within(w, d)) {
                 return Err(format!(
-                    "write: {} lies inside deny_read {}",
+                    "{field}: {} lies inside deny_read {}",
                     w.display(),
                     d.display()
                 ));
             }
             if let Some(d) = self.deny_write.iter().find(|d| within(w, d)) {
                 return Err(format!(
-                    "write: {} lies inside deny_write {}",
+                    "{field}: {} lies inside deny_write {}",
                     w.display(),
                     d.display()
                 ));
             }
         }
         // The same path allowed and denied says nothing; refuse it rather than pick a winner.
-        for r in &self.read {
+        for (field, r) in self.reads() {
             if self.deny_read.contains(r) {
-                return Err(format!("read: {} is also listed in deny_read", r.display()));
+                return Err(format!(
+                    "{field}: {} is also listed in deny_read",
+                    r.display()
+                ));
+            }
+        }
+        if self.network.mode == NetworkMode::Unfiltered {
+            if !self.network.allow.is_empty() {
+                return Err(
+                    "network.allow lists hosts, but mode = \"unfiltered\" allows every \
+                            host; remove one of them"
+                        .into(),
+                );
+            }
+            if self.network.allow_local_binding {
+                return Err(
+                    "network.allow_local_binding is implied by mode = \"unfiltered\"; \
+                            remove one of them"
+                        .into(),
+                );
             }
         }
         for h in &self.network.allow {
@@ -239,7 +307,14 @@ allow_local_binding = true
 
     #[test]
     fn relative_paths_fail_closed_in_every_path_field() {
-        for field in ["read", "write", "deny_read", "deny_write"] {
+        for field in [
+            "read",
+            "write",
+            "read_if_present",
+            "write_if_present",
+            "deny_read",
+            "deny_write",
+        ] {
             assert!(
                 invalid(&format!("name = \"x\"\n{field} = [\"repo\"]\n")),
                 "{field}"
@@ -249,7 +324,14 @@ allow_local_binding = true
 
     #[test]
     fn dotdot_paths_fail_closed_in_every_path_field() {
-        for field in ["read", "write", "deny_read", "deny_write"] {
+        for field in [
+            "read",
+            "write",
+            "read_if_present",
+            "write_if_present",
+            "deny_read",
+            "deny_write",
+        ] {
             assert!(
                 invalid(&format!("name = \"x\"\n{field} = [\"/repo/../etc\"]\n")),
                 "{field}"
@@ -335,5 +417,69 @@ allow_local_binding = true
             .unwrap_err()
             .to_string();
         assert_eq!(i, "t.toml: write: repo is not absolute");
+    }
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn network_modes_parse_and_default_to_none() {
+        let p = parse("name = \"x\"\n").unwrap();
+        assert_eq!(p.network.mode, NetworkMode::None);
+        assert_eq!(p.network.unix_sockets, UnixSockets::Confined);
+        let p = parse(
+            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nunix_sockets = \"unfiltered\"\n",
+        )
+        .unwrap();
+        assert_eq!(p.network.mode, NetworkMode::Unfiltered);
+        assert_eq!(p.network.unix_sockets, UnixSockets::Unfiltered);
+    }
+
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn unknown_network_values_fail_closed() {
+        for body in [
+            "mode = \"ports\"",
+            "mode = \"all\"",
+            "mode = \"Unfiltered\"",
+            "unix_sockets = \"any\"",
+            "mode = true",
+        ] {
+            assert!(
+                matches!(
+                    parse(&format!("name = \"x\"\n[network]\n{body}\n")),
+                    Err(ProfileError::Parse(..))
+                ),
+                "{body}"
+            );
+        }
+    }
+
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn unfiltered_with_host_or_binding_allowances_fails_closed() {
+        assert!(invalid(
+            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nallow = [\"github.com\"]\n"
+        ));
+        assert!(invalid(
+            "name = \"x\"\n[network]\nmode = \"unfiltered\"\nallow_local_binding = true\n"
+        ));
+    }
+
+    #[test]
+    fn if_present_grants_follow_the_same_contradiction_rules() {
+        assert!(invalid(
+            "name = \"x\"\nwrite_if_present = [\"/s/x\"]\ndeny_read = [\"/s\"]\n"
+        ));
+        assert!(invalid(
+            "name = \"x\"\nwrite_if_present = [\"/r/.c/x\"]\ndeny_write = [\"/r/.c\"]\n"
+        ));
+        assert!(invalid(
+            "name = \"x\"\nread_if_present = [\"/s\"]\ndeny_read = [\"/s\"]\n"
+        ));
+        let e = parse("name = \"x\"\nwrite_if_present = [\"/s/x\"]\ndeny_read = [\"/s\"]\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("write_if_present: /s/x lies inside deny_read /s"),
+            "{e}"
+        );
     }
 }

@@ -23,7 +23,7 @@
 //!   could swap a symlink between the two already runs unconfined as the same user; the session
 //!   it would target does not exist until the exec.
 
-use crate::profile::{Profile, within};
+use crate::profile::{Network, NetworkMode, Profile, UnixSockets, within};
 use std::path::{Path, PathBuf};
 
 /// Lowest Landlock ABI the backend accepts: ABI 3 adds `Truncate`.
@@ -33,30 +33,109 @@ pub const UNIX_SOCKET_ABI: i32 = 9;
 /// Highest ABI the landlock crate in use knows; newer kernels are driven at this level.
 pub const MAX_KNOWN_ABI: i32 = 10;
 
-/// The resolved paths Landlock is given.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Plan {
-    pub read: Vec<PathBuf>,
-    pub write: Vec<PathBuf>,
+/// One granted path: as the profile stated it, and as Landlock will see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant {
+    pub field: &'static str,
+    pub stated: PathBuf,
+    pub resolved: PathBuf,
 }
 
-/// What the running kernel lets the backend enforce, decided from its Landlock ABI.
+/// The resolved paths Landlock is given, and the optional ones that were absent.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Plan {
+    pub read: Vec<Grant>,
+    pub write: Vec<Grant>,
+    pub skipped: Vec<PathBuf>,
+}
+
+/// What the backend enforces for one profile on one kernel.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Enforcement {
     /// The ABI the ruleset is built for (the kernel's, capped at `MAX_KNOWN_ABI`).
     pub abi: i32,
-    /// Landlock denies TCP bind/connect too (ABI 4), behind the seccomp socket filter.
+    /// The profile's network mode.
+    pub network: NetworkMode,
+    /// `socket(2)` for families other than `AF_UNIX` is allowed (mode `unfiltered`).
+    pub inet_sockets: bool,
+    /// Landlock denies TCP bind/connect too (mode `none`, ABI 4), behind the socket filter.
     pub tcp: bool,
-    /// Landlock denies UDP bind/send too (ABI 10).
+    /// Landlock denies UDP bind/send too (mode `none`, ABI 10).
     pub udp: bool,
-    /// Landlock scopes signals and abstract UNIX sockets to the session (ABI 6).
-    pub scoped: bool,
-    /// `socket(AF_UNIX)` is allowed because Landlock confines where it can connect (ABI 9).
+    /// `socket(AF_UNIX)` is allowed.
     pub unix_sockets: bool,
+    /// Landlock confines pathname `connect(2)` to write trees (ABI 9, sockets not unfiltered).
+    pub resolve_unix: bool,
+    /// Landlock scopes abstract UNIX sockets to the session (ABI 6, sockets not unfiltered).
+    pub scope_abstract_unix: bool,
+    /// Landlock scopes signals to the session (ABI 6).
+    pub scope_signals: bool,
+    /// Landlock restricts ioctls on device files opened in the session (ABI 5).
+    pub ioctl_dev: bool,
+    /// Landlock logs denials in the session to the audit log (ABI 7).
+    pub audit_log: bool,
 }
 
-/// Decide what to enforce for a kernel reporting Landlock ABI `abi` (<= 0: unavailable).
-pub fn enforcement(abi: i32) -> Result<Enforcement, String> {
+impl Enforcement {
+    /// What this profile leaves unconfined on this kernel, for the startup line.
+    pub fn not_enforced(&self) -> Vec<&'static str> {
+        let mut gaps = Vec::new();
+        if self.network == NetworkMode::Unfiltered {
+            gaps.push("network (mode = unfiltered)");
+        }
+        if self.unix_sockets && !self.resolve_unix {
+            gaps.push("unix socket connections (unix_sockets = unfiltered)");
+        }
+        if !self.ioctl_dev {
+            gaps.push("device ioctls (abi 5)");
+        }
+        if !self.scope_signals {
+            gaps.push("signal scoping (abi 6)");
+        }
+        gaps
+    }
+
+    /// The single startup line written to stderr (the journal, under systemd).
+    pub fn summary(&self, name: &str, plan: &Plan) -> String {
+        let unix = match (self.unix_sockets, self.resolve_unix) {
+            (false, _) => "refused",
+            (true, true) => "confined to write trees",
+            (true, false) => "unfiltered",
+        };
+        let network = match self.network {
+            NetworkMode::None => "none",
+            NetworkMode::Unfiltered => "unfiltered",
+        };
+        let mut s = format!(
+            "zwinger: {name} confined: landlock abi {}; {} read, {} write grants",
+            self.abi,
+            plan.read.len(),
+            plan.write.len()
+        );
+        if !plan.skipped.is_empty() {
+            let names: Vec<String> = plan
+                .skipped
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            s += &format!(" (absent, skipped: {})", names.join(", "));
+        }
+        s += &format!("; network: {network}; unix sockets: {unix}");
+        s += &format!(
+            "; denial audit log: {}",
+            if self.audit_log { "on" } else { "off (abi 7)" }
+        );
+        let gaps = self.not_enforced();
+        if !gaps.is_empty() {
+            s += &format!("; not enforced: {}", gaps.join(", "));
+        }
+        s
+    }
+}
+
+/// Decide what to enforce for `network` on a kernel reporting Landlock ABI `abi` (<= 0:
+/// unavailable).
+pub fn enforcement(abi: i32, network: &Network) -> Result<Enforcement, String> {
     if abi <= 0 {
         return Err(
             "Landlock is not available on this kernel (not built in or not enabled \
@@ -71,12 +150,20 @@ pub fn enforcement(abi: i32) -> Result<Enforcement, String> {
         ));
     }
     let abi = abi.min(MAX_KNOWN_ABI);
+    let none = network.mode == NetworkMode::None;
+    let unix_unfiltered = network.unix_sockets == UnixSockets::Unfiltered;
     Ok(Enforcement {
         abi,
-        tcp: abi >= 4,
-        udp: abi >= 10,
-        scoped: abi >= 6,
-        unix_sockets: abi >= UNIX_SOCKET_ABI,
+        network: network.mode,
+        inet_sockets: !none,
+        tcp: none && abi >= 4,
+        udp: none && abi >= 10,
+        unix_sockets: unix_unfiltered || abi >= UNIX_SOCKET_ABI,
+        resolve_unix: !unix_unfiltered && abi >= UNIX_SOCKET_ABI,
+        scope_abstract_unix: !unix_unfiltered && abi >= 6,
+        scope_signals: abi >= 6,
+        ioctl_dev: abi >= 5,
+        audit_log: abi >= 7,
     })
 }
 
@@ -99,12 +186,38 @@ fn resolve(p: &Path) -> PathBuf {
     }
 }
 
+/// Resolve the granted paths: a missing `read`/`write` path refuses, a missing `*_if_present`
+/// path is recorded in `skipped`.
+fn grants<'a>(
+    paths: impl Iterator<Item = (&'static str, &'a PathBuf)>,
+    skipped: &mut Vec<PathBuf>,
+) -> Result<Vec<Grant>, String> {
+    let mut out = Vec::new();
+    for (field, stated) in paths {
+        match stated.canonicalize() {
+            Ok(resolved) => out.push(Grant {
+                field,
+                stated: stated.clone(),
+                resolved,
+            }),
+            Err(e)
+                if field.ends_with("_if_present") && e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                skipped.push(stated.clone())
+            }
+            Err(e) => return Err(format!("{field}: {}: {e}; refusing", stated.display())),
+        }
+    }
+    Ok(out)
+}
+
 /// Resolve the profile's paths and refuse anything Landlock cannot enforce as written.
 pub fn plan(p: &Profile) -> Result<Plan, String> {
     if !p.network.allow.is_empty() {
         return Err(format!(
             "network.allow lists {} host(s); Landlock filters ports, not hosts, and the Linux \
-             backend has no filtering proxy; refusing rather than allowing all egress",
+             backend has no filtering proxy; refusing rather than allowing all egress (mode = \
+             \"unfiltered\" says so explicitly)",
             p.network.allow.len()
         ));
     }
@@ -115,70 +228,113 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
                 .into(),
         );
     }
-    let existing = |field: &str, paths: &[PathBuf]| -> Result<Vec<PathBuf>, String> {
-        paths
-            .iter()
-            .map(|x| {
-                x.canonicalize()
-                    .map_err(|e| format!("{field}: {}: {e}; refusing", x.display()))
-            })
-            .collect()
-    };
-    let read = existing("read", &p.read)?;
-    let write = existing("write", &p.write)?;
+    let mut skipped = Vec::new();
+    let read = grants(p.reads(), &mut skipped)?;
+    let write = grants(p.writes(), &mut skipped)?;
     let deny_read: Vec<PathBuf> = p.deny_read.iter().map(|d| resolve(d)).collect();
     let deny_write: Vec<PathBuf> = p.deny_write.iter().map(|d| resolve(d)).collect();
 
     for (d, dl) in deny_read.iter().zip(&p.deny_read) {
-        for (a, al, field) in read
-            .iter()
-            .zip(&p.read)
-            .map(|(a, al)| (a, al, "read"))
-            .chain(write.iter().zip(&p.write).map(|(a, al)| (a, al, "write")))
-        {
-            if within(d, a) {
+        for g in read.iter().chain(&write) {
+            if within(d, &g.resolved) {
                 return Err(format!(
-                    "deny_read: {} lies inside {field} {} (resolved: {} in {}); Landlock \
-                     cannot carve a denied path out of a granted tree; refusing",
+                    "deny_read: {} lies inside {} {} (resolved: {} in {}); Landlock cannot \
+                     carve a denied path out of a granted tree; refusing",
                     dl.display(),
-                    al.display(),
+                    g.field,
+                    g.stated.display(),
                     d.display(),
-                    a.display()
+                    g.resolved.display()
                 ));
             }
             // A read inside deny_read is an exception only where the profile wrote it so.
-            let stated = field == "read" && within(al, dl) && al != dl;
-            if within(a, d) && !stated {
+            let stated = g.field.starts_with("read") && within(&g.stated, dl) && g.stated != *dl;
+            if within(&g.resolved, d) && !stated {
                 return Err(format!(
-                    "{field}: {} resolves to {}, inside deny_read {}; refusing",
-                    al.display(),
-                    a.display(),
+                    "{}: {} resolves to {}, inside deny_read {}; refusing",
+                    g.field,
+                    g.stated.display(),
+                    g.resolved.display(),
                     dl.display()
                 ));
             }
         }
     }
     for (d, dl) in deny_write.iter().zip(&p.deny_write) {
-        for (a, al) in write.iter().zip(&p.write) {
-            if within(d, a) {
+        for g in &write {
+            if within(d, &g.resolved) {
                 return Err(format!(
-                    "deny_write: {} lies inside write {}; Landlock cannot carve a read-only \
-                     path out of a writable tree; refusing",
+                    "deny_write: {} lies inside {} {}; Landlock cannot carve a read-only path \
+                     out of a writable tree; refusing",
                     dl.display(),
-                    al.display()
+                    g.field,
+                    g.stated.display()
                 ));
             }
-            if within(a, d) {
+            if within(&g.resolved, d) {
                 return Err(format!(
-                    "write: {} resolves to {}, inside deny_write {}; refusing",
-                    al.display(),
-                    a.display(),
+                    "{}: {} resolves to {}, inside deny_write {}; refusing",
+                    g.field,
+                    g.stated.display(),
+                    g.resolved.display(),
                     dl.display()
                 ));
             }
         }
     }
-    Ok(Plan { read, write })
+    Ok(Plan {
+        read,
+        write,
+        skipped,
+    })
+}
+
+/// Answer what the Linux backend would decide for one access, and which rule decides it.
+/// `what` is a path or `tcp:PORT` / `udp:PORT`.
+pub fn explain(p: &Profile, plan: &Plan, what: &str) -> Vec<String> {
+    if let Some((proto, port)) = what
+        .split_once(':')
+        .filter(|(k, _)| *k == "tcp" || *k == "udp")
+    {
+        let verdict = match p.network.mode {
+            NetworkMode::None => format!(
+                "{proto} port {port}: denied (network.mode = none: socket(2) fails with EACCES)"
+            ),
+            NetworkMode::Unfiltered => {
+                format!("{proto} port {port}: allowed (network.mode = unfiltered)")
+            }
+        };
+        return vec![verdict];
+    }
+    let path = resolve(Path::new(what));
+    let best = |gs: &[Grant]| {
+        gs.iter()
+            .filter(|g| within(&path, &g.resolved))
+            .max_by_key(|g| g.resolved.components().count())
+            .map(|g| format!("{} {}", g.field, g.stated.display()))
+    };
+    let mut out = vec![format!("path {what} (resolved: {})", path.display())];
+    match best(&plan.write) {
+        Some(rule) => {
+            out.push(format!("read: allowed ({rule})"));
+            out.push(format!("write: allowed ({rule})"));
+        }
+        None => {
+            match best(&plan.read) {
+                Some(rule) => out.push(format!("read: allowed ({rule})")),
+                None => out.push(
+                    "read: denied (no read or write grant covers it; open fails with EACCES)"
+                        .into(),
+                ),
+            }
+            out.push(
+                "write: denied (no write grant covers it; open/create/unlink fail with EACCES, \
+                 cross-directory rename or link with EXDEV)"
+                    .into(),
+            );
+        }
+    }
+    out
 }
 
 /// One classic-BPF instruction, laid out as `struct sock_filter`.
@@ -253,16 +409,15 @@ pub fn native_arch() -> Option<Arch> {
 /// Jump targets in `seccomp_program`; resolved to forward offsets once the layout is known.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Label {
-    Allow,
     Deny,
     Socket,
     Ioctl,
 }
 
 /// The seccomp program: kill a foreign architecture, refuse x32, io_uring and the terminal
-/// ioctls TIOCSTI and TIOCLINUX with EPERM, refuse `socket(2)` with EACCES unless the family is
-/// `AF_UNIX` and `unix_sockets` holds.
-pub fn seccomp_program(arch: Arch, unix_sockets: bool) -> Vec<Insn> {
+/// ioctls TIOCSTI and TIOCLINUX with EPERM. `socket(2)` with family `AF_UNIX` is allowed when
+/// `unix_sockets` holds, any other family when `inet_sockets` holds; the rest fail with EACCES.
+pub fn seccomp_program(arch: Arch, unix_sockets: bool, inet_sockets: bool) -> Vec<Insn> {
     enum Op {
         Ld(u32),
         Ret(u32),
@@ -286,17 +441,23 @@ pub fn seccomp_program(arch: Arch, unix_sockets: bool) -> Vec<Insn> {
     for nr in arch.io_uring {
         ops.push(Op::Jump(BPF_JEQ_K, nr, Deny));
     }
-    ops.push(Op::Mark(Allow));
     ops.push(Op::Ret(RET_ALLOW));
     ops.push(Op::Mark(Socket));
-    ops.push(Op::Ld(OFF_ARG0));
-    if unix_sockets {
-        ops.push(Op::Jump(BPF_JEQ_K, AF_UNIX, Allow));
-    }
-    ops.push(Op::Ret(RET_ERRNO | EACCES));
-    if unix_sockets {
-        ops.push(Op::Mark(Allow));
-        ops.push(Op::Ret(RET_ALLOW));
+    match (unix_sockets, inet_sockets) {
+        (true, true) => ops.push(Op::Ret(RET_ALLOW)),
+        (false, false) => ops.push(Op::Ret(RET_ERRNO | EACCES)),
+        (true, false) => {
+            ops.push(Op::Ld(OFF_ARG0));
+            ops.push(Op::Skip(BPF_JEQ_K, AF_UNIX, 1));
+            ops.push(Op::Ret(RET_ERRNO | EACCES));
+            ops.push(Op::Ret(RET_ALLOW));
+        }
+        (false, true) => {
+            ops.push(Op::Ld(OFF_ARG0));
+            ops.push(Op::Skip(BPF_JEQ_K, AF_UNIX, 1));
+            ops.push(Op::Ret(RET_ALLOW));
+            ops.push(Op::Ret(RET_ERRNO | EACCES));
+        }
     }
     ops.push(Op::Mark(Ioctl));
     ops.push(Op::Ld(OFF_ARG1));
@@ -358,7 +519,8 @@ pub fn seccomp_program(arch: Arch, unix_sockets: bool) -> Vec<Insn> {
 
 /// Confine the calling process to `profile`. On success every later `exec` runs confined.
 #[cfg(target_os = "linux")]
-pub fn confine(profile: &Profile) -> Result<Enforcement, String> {
+pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
+    use landlock::BitFlags;
     use landlock::{
         ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
@@ -366,28 +528,43 @@ pub fn confine(profile: &Profile) -> Result<Enforcement, String> {
 
     let plan = plan(profile)?;
     let arch = native_arch().ok_or("no seccomp syscall table for this architecture; refusing")?;
-    let enf = enforcement(kernel_abi())?;
+    let enf = enforcement(kernel_abi(), &profile.network)?;
     let abi = ABI::from(enf.abi);
     let err = |e: landlock::RulesetError| format!("Landlock: {e}; refusing");
 
+    let mut fs_all = AccessFs::from_all(abi);
+    if !enf.resolve_unix {
+        fs_all.remove(AccessFs::ResolveUnix);
+    }
+    let mut scopes: BitFlags<Scope> = BitFlags::EMPTY;
+    if enf.scope_signals {
+        scopes |= Scope::Signal;
+    }
+    if enf.scope_abstract_unix {
+        scopes |= Scope::AbstractUnixSocket;
+    }
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
-        .handle_access(AccessFs::from_all(abi))
+        .handle_access(fs_all)
         .map_err(err)?;
     if enf.tcp {
         ruleset = ruleset
             .handle_access(AccessNet::from_all(abi))
             .map_err(err)?;
     }
-    if enf.scoped {
-        ruleset = ruleset.scope(Scope::from_all(abi)).map_err(err)?;
+    if !scopes.is_empty() {
+        ruleset = ruleset.scope(scopes).map_err(err)?;
     }
     let mut created = ruleset.create().map_err(err)?;
+    if enf.audit_log {
+        // Log denials after the exec too: the session is a new program.
+        created = created.log_new_exec(true).map_err(err)?;
+    }
     for (paths, access) in [
         (&plan.read, AccessFs::from_read(abi)),
-        (&plan.write, AccessFs::from_all(abi)),
+        (&plan.write, fs_all),
     ] {
-        for path in paths {
+        for path in paths.iter().map(|g| &g.resolved) {
             let fd = PathFd::new(path).map_err(|e| format!("{}: {e}; refusing", path.display()))?;
             let access = if path.is_dir() {
                 access
@@ -421,15 +598,16 @@ pub fn confine(profile: &Profile) -> Result<Enforcement, String> {
                 std::io::Error::last_os_error()
             ));
         }
-        let mut filter: Vec<libc::sock_filter> = seccomp_program(arch, enf.unix_sockets)
-            .into_iter()
-            .map(|i| libc::sock_filter {
-                code: i.code,
-                jt: i.jt,
-                jf: i.jf,
-                k: i.k,
-            })
-            .collect();
+        let mut filter: Vec<libc::sock_filter> =
+            seccomp_program(arch, enf.unix_sockets, enf.inet_sockets)
+                .into_iter()
+                .map(|i| libc::sock_filter {
+                    code: i.code,
+                    jt: i.jt,
+                    jf: i.jf,
+                    k: i.k,
+                })
+                .collect();
         let prog = libc::sock_fprog {
             len: u16::try_from(filter.len()).expect("short program"),
             filter: filter.as_mut_ptr(),
@@ -447,7 +625,7 @@ pub fn confine(profile: &Profile) -> Result<Enforcement, String> {
             ));
         }
     }
-    Ok(enf)
+    Ok((enf, plan))
 }
 
 /// The kernel's Landlock ABI version, or 0 when Landlock is unavailable.
@@ -470,40 +648,113 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    // ---- enforcement(abi) ----
+    // ---- enforcement(abi, network) ----
+
+    fn net(mode: NetworkMode, unix: UnixSockets) -> Network {
+        Network {
+            mode,
+            unix_sockets: unix,
+            ..Network::default()
+        }
+    }
 
     // rivet: verifies REQ-ZW-004
     #[test]
     fn abi_below_minimum_refuses() {
         for abi in [-1, 0, 1, 2] {
-            assert!(enforcement(abi).is_err(), "abi {abi}");
+            assert!(enforcement(abi, &Network::default()).is_err(), "abi {abi}");
         }
-        assert!(enforcement(MIN_ABI).is_ok());
+        assert!(enforcement(MIN_ABI, &Network::default()).is_ok());
     }
 
     #[test]
     fn abi_features_switch_on_at_their_versions() {
-        let e = |abi| enforcement(abi).unwrap();
+        let e = |abi| enforcement(abi, &Network::default()).unwrap();
         assert_eq!(
             e(3),
             Enforcement {
                 abi: 3,
+                network: NetworkMode::None,
+                inet_sockets: false,
                 tcp: false,
                 udp: false,
-                scoped: false,
-                unix_sockets: false
+                unix_sockets: false,
+                resolve_unix: false,
+                scope_abstract_unix: false,
+                scope_signals: false,
+                ioctl_dev: false,
+                audit_log: false,
             }
         );
-        assert!(e(4).tcp && !e(4).scoped);
-        assert!(e(6).scoped && !e(6).unix_sockets);
-        assert!(!e(8).unix_sockets);
-        assert!(e(9).unix_sockets && !e(9).udp);
+        assert!(e(4).tcp && !e(4).ioctl_dev);
+        assert!(e(5).ioctl_dev && !e(5).scope_signals);
+        assert!(e(6).scope_signals && e(6).scope_abstract_unix && !e(6).audit_log);
+        assert!(e(7).audit_log && !e(8).unix_sockets);
+        assert!(e(9).unix_sockets && e(9).resolve_unix && !e(9).udp);
         assert!(e(10).udp);
         assert_eq!(
             e(42).abi,
             MAX_KNOWN_ABI,
             "newer kernels run at the known ABI"
         );
+    }
+
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn unfiltered_network_drops_every_network_rule() {
+        for abi in [3, 4, 10] {
+            let e = enforcement(abi, &net(NetworkMode::Unfiltered, UnixSockets::Confined)).unwrap();
+            assert!(e.inet_sockets && !e.tcp && !e.udp, "abi {abi}");
+            assert_eq!(e.unix_sockets, abi >= UNIX_SOCKET_ABI, "abi {abi}");
+        }
+    }
+
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn unfiltered_unix_sockets_drop_landlock_unix_confinement() {
+        for abi in [3, 6, 9, 10] {
+            let e = enforcement(abi, &net(NetworkMode::None, UnixSockets::Unfiltered)).unwrap();
+            assert!(
+                e.unix_sockets && !e.resolve_unix && !e.scope_abstract_unix,
+                "abi {abi}"
+            );
+            assert!(!e.inet_sockets);
+            assert_eq!(e.scope_signals, abi >= 6, "signals stay scoped, abi {abi}");
+        }
+    }
+
+    // rivet: verifies REQ-ZW-010
+    #[test]
+    fn summary_names_the_abi_mode_and_gaps() {
+        let plan = Plan {
+            read: vec![],
+            write: vec![],
+            skipped: vec![PathBuf::from("/opt/x")],
+        };
+        let e = enforcement(4, &net(NetworkMode::Unfiltered, UnixSockets::Confined)).unwrap();
+        assert_eq!(
+            e.summary("runner19", &plan),
+            "zwinger: runner19 confined: landlock abi 4; 0 read, 0 write grants (absent, \
+             skipped: /opt/x); network: unfiltered; unix sockets: refused; denial audit log: off \
+             (abi 7); not enforced: network (mode = unfiltered), device ioctls (abi 5), signal \
+             scoping (abi 6)"
+        );
+        let plan = Plan {
+            read: vec![],
+            write: vec![],
+            skipped: vec![],
+        };
+        let e = enforcement(10, &Network::default()).unwrap();
+        assert_eq!(
+            e.summary("agent", &plan),
+            "zwinger: agent confined: landlock abi 10; 0 read, 0 write grants; network: none; \
+             unix sockets: confined to write trees; denial audit log: on"
+        );
+        let e = enforcement(10, &net(NetworkMode::None, UnixSockets::Unfiltered)).unwrap();
+        assert!(e.summary("a", &plan).ends_with(
+            "unix sockets: unfiltered; denial audit log: on; not enforced: unix socket \
+             connections (unix_sockets = unfiltered)"
+        ));
     }
 
     // ---- plan(profile) ----
@@ -541,8 +792,16 @@ mod tests {
             "read = [\"@/usr\"]\nwrite = [\"@/home/repo\"]\n",
         ))
         .unwrap();
-        assert_eq!(p.read, vec![t.0.join("usr").canonicalize().unwrap()]);
-        assert_eq!(p.write, vec![t.0.join("home/repo").canonicalize().unwrap()]);
+        let resolved = |gs: &[Grant]| gs.iter().map(|g| g.resolved.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            resolved(&p.read),
+            vec![t.0.join("usr").canonicalize().unwrap()]
+        );
+        assert_eq!(
+            resolved(&p.write),
+            vec![t.0.join("home/repo").canonicalize().unwrap()]
+        );
+        assert!(p.skipped.is_empty());
     }
 
     // rivet: verifies REQ-ZW-008
@@ -652,6 +911,135 @@ mod tests {
         assert!(plan(&profile(&t, body)).is_ok());
     }
 
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn missing_if_present_grants_are_skipped_not_refused() {
+        let t = tree();
+        let body = "read_if_present = [\"@/nope\", \"@/usr\"]\nwrite_if_present = [\"@/gone\"]\n";
+        let p = plan(&profile(&t, body)).unwrap();
+        assert_eq!(p.read.len(), 1);
+        assert_eq!(p.read[0].field, "read_if_present");
+        assert!(p.write.is_empty());
+        assert_eq!(p.skipped, vec![t.0.join("nope"), t.0.join("gone")]);
+    }
+
+    // rivet: verifies REQ-ZW-009
+    #[test]
+    fn if_present_grants_obey_the_carve_out_rules() {
+        let t = tree();
+        let body = "write_if_present = [\"@/home\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        assert!(plan(&profile(&t, body)).is_err());
+        let body = "write_if_present = [\"@/home/repo\"]\ndeny_write = [\"@/home/repo/.claude\"]\n";
+        assert!(plan(&profile(&t, body)).is_err());
+        let body = "read_if_present = [\"@/home/.ssh/k.pub\"]\ndeny_read = [\"@/home/.ssh\"]\n";
+        assert!(plan(&profile(&t, body)).is_ok(), "a stated read exception");
+    }
+
+    // rivet: verifies REQ-ZW-010
+    #[test]
+    fn explain_names_the_deciding_grant() {
+        let t = tree();
+        let pr = profile(&t, "read = [\"@/home\"]\nwrite = [\"@/home/repo\"]\n");
+        let pl = plan(&pr).unwrap();
+        let home = t.0.join("home");
+        let ex = |p: &Path| explain(&pr, &pl, p.to_str().unwrap());
+        let w = ex(&home.join("repo/src/x.rs"));
+        assert_eq!(
+            w[1],
+            format!("read: allowed (write {})", home.join("repo").display())
+        );
+        assert_eq!(
+            w[2],
+            format!("write: allowed (write {})", home.join("repo").display())
+        );
+        let r = ex(&home.join(".ssh/k.pub"));
+        assert_eq!(r[1], format!("read: allowed (read {})", home.display()));
+        assert!(r[2].starts_with("write: denied"), "{r:?}");
+        let o = ex(&t.0.join("usr/bin"));
+        assert!(
+            o[1].starts_with("read: denied") && o[2].starts_with("write: denied"),
+            "{o:?}"
+        );
+        assert_eq!(o.len(), 3);
+    }
+
+    #[test]
+    fn explain_picks_the_most_specific_read_grant() {
+        let t = tree();
+        let pr = profile(&t, "read = [\"@/home\", \"@/home/repo\"]\n");
+        let pl = plan(&pr).unwrap();
+        let x = explain(&pr, &pl, t.0.join("home/repo/a").to_str().unwrap());
+        assert_eq!(
+            x[1],
+            format!("read: allowed (read {})", t.0.join("home/repo").display())
+        );
+        let pr = profile(&t, "read = [\"@/home/repo\", \"@/home\"]\n");
+        let pl = plan(&pr).unwrap();
+        let x = explain(&pr, &pl, t.0.join("home/repo/a").to_str().unwrap());
+        assert_eq!(
+            x[1],
+            format!("read: allowed (read {})", t.0.join("home/repo").display())
+        );
+    }
+
+    // rivet: verifies REQ-ZW-010
+    #[test]
+    fn explain_answers_ports_by_mode() {
+        let t = tree();
+        let none = profile(&t, "");
+        let pl = plan(&none).unwrap();
+        assert!(explain(&none, &pl, "tcp:443")[0].starts_with("tcp port 443: denied"));
+        assert!(explain(&none, &pl, "udp:53")[0].starts_with("udp port 53: denied"));
+        let open = profile(&t, "[network]\nmode = \"unfiltered\"\n");
+        let pl = plan(&open).unwrap();
+        assert!(explain(&open, &pl, "tcp:443")[0].starts_with("tcp port 443: allowed"));
+        // Only tcp: and udp: are ports; anything else is a path.
+        assert!(explain(&open, &pl, "http:x")[0].starts_with("path http:x"));
+    }
+
+    // rivet: verifies REQ-ZW-011
+    #[test]
+    fn runner_template_refuses_until_substituted_then_plans() {
+        let template = include_str!("../profiles/github-runner.toml");
+        assert!(matches!(
+            Profile::parse(Path::new("github-runner.toml"), template),
+            Err(crate::profile::ProfileError::Invalid(..))
+        ));
+        let t = tree();
+        for d in [
+            "runner/_work",
+            "runner/_tmp",
+            "runner/_diag",
+            "runner/.cache",
+        ] {
+            std::fs::create_dir_all(t.0.join(d)).unwrap();
+        }
+        let home = t.0.join("runner");
+        let text = template.replace("{{home}}", home.to_str().unwrap());
+        assert!(!text.contains("{{"), "the only placeholder is {{home}}");
+        let p = Profile::parse(Path::new("runner.toml"), &text).unwrap();
+        assert_eq!(p.network.mode, NetworkMode::Unfiltered);
+        assert!(
+            p.write
+                .iter()
+                .all(|w| w.starts_with(&home) || w.starts_with("/tmp") || w.starts_with("/dev"))
+        );
+        assert!(!p.write.contains(&home), "the home itself stays read-only");
+        // The system trees exist on Linux runners, not on every test host; check the planner
+        // on the runner's own part only.
+        let mut own = p.clone();
+        own.read.retain(|r| r.starts_with(&home));
+        own.write.retain(|w| w.starts_with(&home));
+        own.read_if_present.clear();
+        let pl = plan(&own).unwrap();
+        assert_eq!(
+            pl.write.len(),
+            3 + 1,
+            "_work, _tmp, _diag and the one cache present"
+        );
+        assert_eq!(pl.skipped.len(), own.write_if_present.len() - 1);
+    }
+
     // rivet: verifies REQ-ZW-005
     #[test]
     fn host_allow_list_refuses_on_linux() {
@@ -706,11 +1094,16 @@ mod tests {
     const AF_PACKET: u32 = 17;
 
     fn every_case(arch: Arch) {
-        for unix in [false, true] {
-            let prog = seccomp_program(arch, unix);
+        for (unix, inet) in [(false, false), (true, false), (false, true), (true, true)] {
+            let prog = seccomp_program(arch, unix, inet);
             let r = |nr, a0| run(&prog, arch.audit_arch, nr, a0, 0);
+            let inet_expect = if inet { RET_ALLOW } else { RET_ERRNO | EACCES };
             for fam in [AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, 0, 0xffff_ffff] {
-                assert_eq!(r(arch.socket, fam), RET_ERRNO | EACCES, "family {fam}");
+                assert_eq!(
+                    r(arch.socket, fam),
+                    inet_expect,
+                    "family {fam}, inet {inet}"
+                );
             }
             let unix_expect = if unix { RET_ALLOW } else { RET_ERRNO | EACCES };
             assert_eq!(r(arch.socket, AF_UNIX), unix_expect);

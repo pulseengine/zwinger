@@ -127,11 +127,11 @@ jobs:
       - name: Links have their inverses
         run: rivet check bidirectional
 
-      # Overall weighted coverage is 89.5% (measured 2026-11-26; 90 fails). Requirement
-      # verification is 6 of 8: REQ-ZW-003 (macOS, waits for the VM) and REQ-ZW-007 (Pi kernel) are drafts with
-      # no verification yet. Raise this as they land.
+      # Overall weighted coverage is 92.3% (measured 2026-11-26; 93 fails). Requirement
+      # verification is 9 of 11: REQ-ZW-003 (macOS, waits for the VM) and REQ-ZW-007 (Pi kernel)
+      # are drafts with no verification yet. Raise this as they land.
       - name: Requirement verification coverage
-        run: rivet coverage --fail-under 89 --strict-empty
+        run: rivet coverage --fail-under 92 --strict-empty
 
   mutants:
     # The profile parser and the Linux planner (refusals, ABI decisions, seccomp program) with

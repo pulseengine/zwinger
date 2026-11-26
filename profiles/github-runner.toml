@@ -1,0 +1,71 @@
+# zwinger profile for one self-hosted GitHub Actions runner on Linux (Landlock ABI >= 3).
+#
+# Template: replace every {{home}} with the runner's home, e.g. /var/lib/runners/runner19. An
+# unsubstituted file fails `zwinger check` ("{{home}}/_work is not absolute"), so a missed
+# substitution cannot run.
+#
+# systemd: ExecStart=/usr/local/bin/zwinger run /etc/zwinger/runnerN.toml -- {{home}}/run.sh
+# zwinger execs, so run.sh stays the unit's main PID. Rollback: drop the
+# `zwinger run ... --` prefix and restart the unit.
+#
+# What this confines: paths. Jobs can read the system trees and the runner's home, and write
+# only the work, temp, log and cache directories below. The home itself is read-only, so a job
+# cannot replace bin/Runner.Worker or run.sh for later jobs. That requires the runner to be
+# configured with --disableupdate and updated by redeploy.
+#
+# What it does not confine:
+# - the network (mode = "unfiltered"): sccache and Bazel use loopback ports and Landlock filters
+#   by port, not address, so any port rule that admits them admits remote ones too;
+# - the runner's own .runner and .credentials: Runner.Listener reads them, and every job
+#   inherits the Listener's confinement;
+# - at ABI 4 (Linux 6.8): device ioctls (ABI 5) and signals to the runner's own processes
+#   (ABI 6). Other users' processes are out of reach anyway.
+#
+# A denial shows up as EACCES from open/creat/mkdir/unlink/truncate (EXDEV for a rename or link
+# across directories). `zwinger explain <this file> <path>` names the rule that decides a path.
+
+name = "github-runner"
+
+read = [
+    "/usr",
+    "/etc",
+    "/proc",
+    "/sys",
+    "/dev",
+    "{{home}}",
+]
+
+read_if_present = [
+    "/opt",
+    "/lib",
+    "/lib64",
+    "/lib32",
+    "/libx32",
+    # /etc/resolv.conf links here on Ubuntu; Landlock checks the link's target.
+    "/run/systemd/resolve",
+]
+
+write = [
+    "{{home}}/_work",
+    "{{home}}/_tmp",
+    "{{home}}/_diag",
+    "/tmp",
+    "/dev/null",
+]
+
+# Missing directories are skipped, and a job cannot create them later (the home is read-only):
+# create every cache directory a runner should have before starting the unit.
+write_if_present = [
+    "{{home}}/.cache",
+    "{{home}}/.cargo",
+    "{{home}}/.rustup",
+    "{{home}}/.bazel",
+    "{{home}}/.npm",
+    "{{home}}/.bun",
+    "{{home}}/.local",
+    "{{home}}/.kani",
+    "{{home}}/.varve",
+]
+
+[network]
+mode = "unfiltered"
