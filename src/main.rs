@@ -8,20 +8,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("check") if args.len() == 2 => match Profile::load(Path::new(&args[1])) {
-            Ok(p) => {
-                println!(
-                    "zwinger: profile {} ok: {} readable, {} writable, {} read-denied, \
-                     {} write-denied, {} hosts, {} mach services",
-                    p.name,
-                    p.read.len(),
-                    p.write.len(),
-                    p.deny_read.len(),
-                    p.deny_write.len(),
-                    p.network.allow.len(),
-                    p.mach_lookup.len()
-                );
-                ExitCode::SUCCESS
-            }
+            Ok(p) => check(&p),
             Err(e) => refuse(&e.to_string()),
         },
         Some("explain") if args.len() == 3 => match Profile::load(Path::new(&args[1])) {
@@ -84,6 +71,41 @@ fn run(p: &Profile, cmd: &str, args: &[String]) -> ExitCode {
 fn run(_: &Profile, _: &str, _: &[String]) -> ExitCode {
     // Fail closed: never run a command unconfined because no backend exists yet.
     refuse("no enforcement backend on this platform yet; refusing to run unconfined")
+}
+
+/// `check` on Linux is `run` without confining or exec: the same plan, the same kernel ABI
+/// test, the same refusals. A pre-flight check that passes means `run` will confine.
+#[cfg(target_os = "linux")]
+fn check(p: &Profile) -> ExitCode {
+    match zwinger::linux::preflight(p) {
+        Ok((enf, plan)) => {
+            println!("zwinger: profile {} ok", p.name);
+            println!(
+                "{}",
+                enf.summary(&p.name, &plan)
+                    .replacen(" confined:", " would be confined:", 1)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => refuse(&e),
+    }
+}
+
+/// Without a backend only the profile itself can be checked; say that paths were not.
+#[cfg(not(target_os = "linux"))]
+fn check(p: &Profile) -> ExitCode {
+    println!(
+        "zwinger: profile {} ok: {} readable, {} writable, {} read-denied, {} write-denied, \
+         {} hosts, {} mach services; paths not checked (no enforcement backend on this platform)",
+        p.name,
+        p.read.len(),
+        p.write.len(),
+        p.deny_read.len(),
+        p.deny_write.len(),
+        p.network.allow.len(),
+        p.mach_lookup.len()
+    );
+    ExitCode::SUCCESS
 }
 
 fn refuse(why: &str) -> ExitCode {

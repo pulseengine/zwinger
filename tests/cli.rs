@@ -31,7 +31,9 @@ mod tempfile_path {
 
 #[test]
 fn check_accepts_a_valid_profile() {
-    let p = profile("name: \"s\"\nwrite: [\"/tmp/s\"]\n");
+    // A write tree that exists: on Linux, check plans the paths as run would.
+    let dir = std::env::temp_dir();
+    let p = profile(&format!("name: s\nwrite: [{:?}]\n", dir.to_str().unwrap()));
     let o = zwinger(&["check", p.0.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }

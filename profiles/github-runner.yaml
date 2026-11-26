@@ -43,6 +43,10 @@ read_if_present:
   - "/libx32"
   # /etc/resolv.conf links here on Ubuntu; Landlock checks the link's target.
   - "/run/systemd/resolve"
+  # Toolchains outside {{home}} must be added here. If the runner's PATH, CARGO_HOME,
+  # RUSTUP_HOME or ELAN_HOME point at a shared install elsewhere (another user's ~/.cargo,
+  # ~/.rustup, ~/.elan), add those directories, or rustc and cargo fail with "Permission
+  # denied" under confinement. `zwinger explain <profile> <path>` shows which rule decides.
 
 write:
   - "{{home}}/_work"
