@@ -380,7 +380,7 @@ pub fn check_carve_outs(
     write: &[Grant],
     deny_read: &[Denied],
     deny_write: &[Denied],
-) -> Result<(), CarveRefusal> {
+) -> Result<(), Box<CarveRefusal>> {
     fn g(gs: &[Grant]) -> Vec<PathView<'_>> {
         gs.iter()
             .map(|g| PathView {
@@ -417,7 +417,7 @@ pub fn check_carve_outs(
     } else {
         read[v.grant].clone()
     };
-    Err(if v.deny_inside_grant {
+    Err(Box::new(if v.deny_inside_grant {
         CarveRefusal::DenyInsideGrant {
             deny_field,
             deny,
@@ -429,7 +429,7 @@ pub fn check_carve_outs(
             deny,
             grant,
         }
-    })
+    }))
 }
 
 /// Resolve the profile's paths and refuse anything Landlock cannot enforce as written.
