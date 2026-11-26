@@ -17,7 +17,11 @@
 //!   `ResolveUnix`, ABI 6: abstract sockets via scoping). On older kernels `socket(AF_UNIX)` is
 //!   refused too; `socketpair(2)` stays available because it cannot reach another process.
 //! - Inherited file descriptors above 2 are marked close-on-exec, so an fd opened outside the
-//!   profile does not leak into the session.
+//!   profile does not leak into the session. Fds 0-2 stay, and may be the caller's terminal, so
+//!   `ioctl` with TIOCSTI or TIOCLINUX (injecting input an unconfined shell would read) fails.
+//! - Paths are resolved and checked, then opened for Landlock in a second step. A process that
+//!   could swap a symlink between the two already runs unconfined as the same user; the session
+//!   it would target does not exist until the exec.
 
 use crate::profile::{Profile, within};
 use std::path::{Path, PathBuf};
@@ -196,16 +200,24 @@ pub const RET_ERRNO: u32 = 0x0005_0000;
 pub const EPERM: u32 = 1;
 pub const EACCES: u32 = 13;
 pub const AF_UNIX: u32 = 1;
-/// `struct seccomp_data` offsets: nr, arch, args[0] (low half on little-endian).
+/// Terminal ioctls that act on a terminal on another process's behalf: TIOCSTI pushes bytes
+/// into the input queue (which an unconfined parent shell then reads), TIOCLINUX can paste the
+/// console selection. Refused because the session inherits the caller's terminal on fds 0-2,
+/// opened before confinement and so outside Landlock's IoctlDev right.
+pub const TIOCSTI: u32 = 0x5412;
+pub const TIOCLINUX: u32 = 0x541C;
+/// `struct seccomp_data` offsets: nr, arch, args[0] and args[1] (low halves on little-endian).
 pub const OFF_NR: u32 = 0;
 pub const OFF_ARCH: u32 = 4;
 pub const OFF_ARG0: u32 = 16;
+pub const OFF_ARG1: u32 = 24;
 
 /// The syscall table for one architecture.
 #[derive(Debug, Clone, Copy)]
 pub struct Arch {
     pub audit_arch: u32,
     pub socket: u32,
+    pub ioctl: u32,
     pub io_uring: [u32; 3],
     /// Syscall numbers at or above this belong to a second ABI on the same audit arch (x32).
     pub foreign_from: Option<u32>,
@@ -214,6 +226,7 @@ pub struct Arch {
 pub const X86_64: Arch = Arch {
     audit_arch: 0xC000_003E,
     socket: 41,
+    ioctl: 16,
     io_uring: [425, 426, 427],
     foreign_from: Some(0x4000_0000),
 };
@@ -221,6 +234,7 @@ pub const X86_64: Arch = Arch {
 pub const AARCH64: Arch = Arch {
     audit_arch: 0xC000_00B7,
     socket: 198,
+    ioctl: 29,
     io_uring: [425, 426, 427],
     foreign_from: None,
 };
@@ -236,68 +250,110 @@ pub fn native_arch() -> Option<Arch> {
     }
 }
 
-/// The seccomp program: kill a foreign architecture, refuse x32, refuse io_uring with EPERM,
-/// refuse `socket(2)` with EACCES unless the family is `AF_UNIX` and `unix_sockets` holds.
+/// Jump targets in `seccomp_program`; resolved to forward offsets once the layout is known.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Label {
+    Allow,
+    Deny,
+    Socket,
+    Ioctl,
+}
+
+/// The seccomp program: kill a foreign architecture, refuse x32, io_uring and the terminal
+/// ioctls TIOCSTI and TIOCLINUX with EPERM, refuse `socket(2)` with EACCES unless the family is
+/// `AF_UNIX` and `unix_sockets` holds.
 pub fn seccomp_program(arch: Arch, unix_sockets: bool) -> Vec<Insn> {
-    let ret = |k| Insn {
-        code: BPF_RET_K,
-        jt: 0,
-        jf: 0,
-        k,
-    };
-    let ld = |k| Insn {
-        code: BPF_LD_W_ABS,
-        jt: 0,
-        jf: 0,
-        k,
-    };
-    // Instruction counts, so forward jump offsets can be computed in place.
-    let n_foreign = usize::from(arch.foreign_from.is_some());
-    let n_checks = n_foreign + 1 + arch.io_uring.len(); // jumps after `ld nr`
-    let mut p = vec![
-        ld(OFF_ARCH),
-        Insn {
-            code: BPF_JEQ_K,
-            jt: 1,
-            jf: 0,
-            k: arch.audit_arch,
-        },
-        ret(RET_KILL_PROCESS),
-        ld(OFF_NR),
+    enum Op {
+        Ld(u32),
+        Ret(u32),
+        Jump(u16, u32, Label),
+        Mark(Label),
+        /// Jump over the next `n` instructions when the condition holds.
+        Skip(u16, u32, u8),
+    }
+    use Label::*;
+    let mut ops = vec![
+        Op::Ld(OFF_ARCH),
+        Op::Skip(BPF_JEQ_K, arch.audit_arch, 1),
+        Op::Ret(RET_KILL_PROCESS),
+        Op::Ld(OFF_NR),
     ];
-    // Layout after the checks: ALLOW, SOCK (ld arg0), [jeq AF_UNIX], ret EACCES, [ALLOW], DENY.
-    let sock_len = if unix_sockets { 4 } else { 2 };
-    let deny_at = n_checks + 1 + sock_len; // relative to the first check
-    let sock_at = n_checks + 1;
-    let mut i = 0usize;
-    let mut jump = |code, k, target: usize| {
-        let jt = u8::try_from(target - i - 1).expect("short program");
-        i += 1;
-        Insn { code, jt, jf: 0, k }
-    };
     if let Some(from) = arch.foreign_from {
-        p.push(jump(BPF_JGE_K, from, deny_at));
+        ops.push(Op::Jump(BPF_JGE_K, from, Deny));
     }
-    p.push(jump(BPF_JEQ_K, arch.socket, sock_at));
+    ops.push(Op::Jump(BPF_JEQ_K, arch.socket, Socket));
+    ops.push(Op::Jump(BPF_JEQ_K, arch.ioctl, Ioctl));
     for nr in arch.io_uring {
-        p.push(jump(BPF_JEQ_K, nr, deny_at));
+        ops.push(Op::Jump(BPF_JEQ_K, nr, Deny));
     }
-    p.push(ret(RET_ALLOW));
-    p.push(ld(OFF_ARG0));
+    ops.push(Op::Mark(Allow));
+    ops.push(Op::Ret(RET_ALLOW));
+    ops.push(Op::Mark(Socket));
+    ops.push(Op::Ld(OFF_ARG0));
     if unix_sockets {
-        p.push(Insn {
-            code: BPF_JEQ_K,
-            jt: 1,
-            jf: 0,
-            k: AF_UNIX,
-        });
+        ops.push(Op::Jump(BPF_JEQ_K, AF_UNIX, Allow));
     }
-    p.push(ret(RET_ERRNO | EACCES));
+    ops.push(Op::Ret(RET_ERRNO | EACCES));
     if unix_sockets {
-        p.push(ret(RET_ALLOW));
+        ops.push(Op::Mark(Allow));
+        ops.push(Op::Ret(RET_ALLOW));
     }
-    p.push(ret(RET_ERRNO | EPERM));
-    p
+    ops.push(Op::Mark(Ioctl));
+    ops.push(Op::Ld(OFF_ARG1));
+    ops.push(Op::Jump(BPF_JEQ_K, TIOCSTI, Deny));
+    ops.push(Op::Jump(BPF_JEQ_K, TIOCLINUX, Deny));
+    ops.push(Op::Ret(RET_ALLOW));
+    ops.push(Op::Mark(Deny));
+    ops.push(Op::Ret(RET_ERRNO | EPERM));
+
+    // Resolve labels. BPF jumps only go forward, so a label may be marked more than once and a
+    // jump goes to the nearest mark after it.
+    let mut at = Vec::new();
+    let mut n = 0usize;
+    for op in &ops {
+        match op {
+            Op::Mark(l) => at.push((*l, n)),
+            _ => n += 1,
+        }
+    }
+    let index = |l: Label, from: usize| -> usize {
+        at.iter()
+            .filter(|(m, i)| *m == l && *i > from)
+            .map(|&(_, i)| i)
+            .min()
+            .expect("forward label")
+    };
+    let mut prog = Vec::with_capacity(n);
+    for op in &ops {
+        let i = prog.len();
+        let insn = match *op {
+            Op::Mark(_) => continue,
+            Op::Skip(code, k, n) => Insn {
+                code,
+                jt: n,
+                jf: 0,
+                k,
+            },
+            Op::Ld(k) => Insn {
+                code: BPF_LD_W_ABS,
+                jt: 0,
+                jf: 0,
+                k,
+            },
+            Op::Ret(k) => Insn {
+                code: BPF_RET_K,
+                jt: 0,
+                jf: 0,
+                k,
+            },
+            Op::Jump(code, k, l) => {
+                let jt = u8::try_from(index(l, i) - i - 1).expect("short program");
+                Insn { code, jt, jf: 0, k }
+            }
+        };
+        prog.push(insn);
+    }
+    prog
 }
 
 /// Confine the calling process to `profile`. On success every later `exec` runs confined.
@@ -621,7 +677,7 @@ mod tests {
     // ---- seccomp_program: run it in a classic-BPF interpreter ----
 
     /// Execute `prog` against one `seccomp_data`; panics on a malformed program.
-    fn run(prog: &[Insn], arch: u32, nr: u32, arg0: u32) -> u32 {
+    fn run(prog: &[Insn], arch: u32, nr: u32, arg0: u32, arg1: u32) -> u32 {
         let (mut pc, mut acc) = (0usize, 0u32);
         loop {
             let i = prog[pc];
@@ -632,6 +688,7 @@ mod tests {
                         OFF_NR => nr,
                         OFF_ARCH => arch,
                         OFF_ARG0 => arg0,
+                        OFF_ARG1 => arg1,
                         k => panic!("load from {k}"),
                     }
                 }
@@ -651,7 +708,7 @@ mod tests {
     fn every_case(arch: Arch) {
         for unix in [false, true] {
             let prog = seccomp_program(arch, unix);
-            let r = |nr, a0| run(&prog, arch.audit_arch, nr, a0);
+            let r = |nr, a0| run(&prog, arch.audit_arch, nr, a0, 0);
             for fam in [AF_INET, AF_INET6, AF_NETLINK, AF_PACKET, 0, 0xffff_ffff] {
                 assert_eq!(r(arch.socket, fam), RET_ERRNO | EACCES, "family {fam}");
             }
@@ -663,18 +720,27 @@ mod tests {
             for nr in [0, 1, 59, 221, 424, 428] {
                 assert_eq!(r(nr, AF_INET), RET_ALLOW, "nr {nr}");
             }
+            // ioctl: only the two terminal-injection requests are refused, on any fd.
+            let io = |fd, req| run(&prog, arch.audit_arch, arch.ioctl, fd, req);
+            for fd in [0, 1, 2, 7] {
+                assert_eq!(io(fd, TIOCSTI), RET_ERRNO | EPERM, "TIOCSTI on fd {fd}");
+                assert_eq!(io(fd, TIOCLINUX), RET_ERRNO | EPERM, "TIOCLINUX on fd {fd}");
+            }
+            for req in [0x5401, 0x5413, 0x541B, 0x5411, 0, TIOCSTI + 0x1_0000] {
+                assert_eq!(io(0, req), RET_ALLOW, "ioctl {req:#x}");
+            }
             if let Some(from) = arch.foreign_from {
                 assert_eq!(r(from + arch.socket, AF_INET), RET_ERRNO | EPERM);
                 assert_eq!(r(from, 0), RET_ERRNO | EPERM);
                 assert_eq!(r(from - 1, 0), RET_ALLOW);
             }
             assert_eq!(
-                run(&prog, 0x4000_0003, 0, 0),
+                run(&prog, 0x4000_0003, 0, 0, 0),
                 RET_KILL_PROCESS,
                 "i386 on x86_64"
             );
             assert_eq!(
-                run(&prog, arch.audit_arch ^ 1, arch.socket, AF_UNIX),
+                run(&prog, arch.audit_arch ^ 1, arch.socket, AF_UNIX, 0),
                 RET_KILL_PROCESS
             );
         }

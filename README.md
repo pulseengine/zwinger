@@ -33,7 +33,7 @@ Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_
 - a `deny_read` lies inside a granted tree, or a `deny_write` inside a write tree, because Landlock is an allow list and cannot carve a subtree out of a granted one;
 - `network.allow` names hosts or `allow_local_binding` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.
 
-No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works.
+No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works. `ioctl` with `TIOCSTI` or `TIOCLINUX` is refused, so the session cannot push input into the caller's terminal for the unconfined shell to run.
 
 Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes outside the granted trees; signals to other processes below ABI 6; device ioctls below ABI 5.
 

@@ -57,13 +57,15 @@ artifacts:
 
   - id: REQ-ZW-006
     type: requirement
-    title: "Linux: UNIX sockets are confined by Landlock or not available"
+    title: "Linux: UNIX sockets and the inherited terminal cannot reach outside the session"
     status: approved
     description: >
       socket(AF_UNIX) is allowed only when Landlock confines where it can connect: pathname
       sockets through ResolveUnix (ABI 9) granted on write trees only, abstract sockets and
       signals through scoping (ABI 6). On older kernels socket(AF_UNIX) fails with EACCES;
-      socketpair(2) stays available.
+      socketpair(2) stays available. ioctl(2) with TIOCSTI or TIOCLINUX fails with EPERM on
+      every fd, because fds 0-2 may be the caller's terminal and pushing input into it would run
+      commands in the unconfined shell after the session exits.
 
   - id: REQ-ZW-007
     type: requirement
@@ -130,7 +132,7 @@ artifacts:
       every right of that ABI under the crate's HardRequirement level, never best effort. Where
       an older ABI leaves a channel open that the profile closes, the backend either refuses (ABI
       below 3) or closes the channel with seccomp (all non-UNIX sockets, io_uring, and AF_UNIX
-      below ABI 9). The seccomp program is a classic-BPF filter of at most 15 instructions written out in
+      below ABI 9). The seccomp program is a classic-BPF filter of at most 20 instructions written out in
       src/linux.rs and run through an interpreter in its unit tests on every platform.
     decision: >
       Landlock (landlock crate 0.4.8) for paths and ports; a hand-written seccomp filter for
@@ -142,7 +144,10 @@ artifacts:
       not mistaken for coverage: Landlock does not restrict chmod, chown, utime or xattr changes
       on paths outside the granted trees; below ABI 6 signals to processes outside the session
       are not scoped; below ABI 5 device ioctls are not restricted; host-level egress filtering
-      needs a proxy that does not exist yet.
+      needs a proxy that does not exist yet; paths are checked and then opened in two steps,
+      which only a process already unconfined as the same user could race. The terminal
+      injection ioctls are not covered end to end: on a terminal that is not the caller's
+      controlling one the kernel itself returns EPERM, so a probe cannot tell the two apart.
     links:
       - type: satisfies
         target: REQ-ZW-004
@@ -180,8 +185,8 @@ artifacts:
       src/linux.rs tests, which run on every platform: ABI 0..2 refused and the features of ABI
       3..10 switched on at their versions; missing granted paths, carve-outs, symlink aliasing in
       both directions, host lists and loopback binding refused; the seccomp program executed in a
-      classic-BPF interpreter for x86_64 and aarch64 over socket families, io_uring, x32 and a
-      foreign architecture. Mutation-tested in CI with zero missed.
+      classic-BPF interpreter for x86_64 and aarch64 over socket families, io_uring, the TIOCSTI and
+      TIOCLINUX ioctls against other ioctl requests, x32 and a foreign architecture. Mutation-tested in CI with zero missed.
     links:
       - type: verifies
         target: REQ-ZW-004
