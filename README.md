@@ -63,7 +63,7 @@ Tagged releases publish static Linux binaries (`x86_64-unknown-linux-musl`, `aar
 
 ```sh
 cosign verify-blob \
-  --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+  --certificate-identity-regexp '^https://github\.com/pulseengine/zwinger/\.github/workflows/release\.yml@refs/tags/v.*$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
 sha256sum --check --ignore-missing SHA256SUMS.txt

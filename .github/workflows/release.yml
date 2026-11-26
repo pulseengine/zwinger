@@ -5,7 +5,7 @@ name: Release
 # archives, the sums signed with cosign keyless. Verify a published release with:
 #
 #   cosign verify-blob \
-#     --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+#     --certificate-identity-regexp '^https://github\.com/pulseengine/zwinger/\.github/workflows/release\.yml@refs/tags/v.*$' \
 #     --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
 #     --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
 #   sha256sum --check --ignore-missing SHA256SUMS.txt
@@ -29,13 +29,11 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
-  # Re-run for a tag whose first run failed partway. The tag must already exist.
+  # Re-run for a tag whose first run failed partway: dispatch it with "Use workflow from" set to
+  # that tag. There is no tag input on purpose. A dispatch from a branch is refused by the guard
+  # below, so a signature always carries a refs/tags/v* identity and only a tag's own code can
+  # replace (--clobber) that tag's release assets.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag to (re)build (e.g. v0.1.0)"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -59,19 +57,18 @@ jobs:
       version: ${{ steps.compare.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag || github.ref }}
       - name: Compare
         id: compare
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           CARGO="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             VERSION="v$CARGO"
           else
-            VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+            case "$GITHUB_REF" in
+              refs/tags/v*) VERSION="${GITHUB_REF#refs/tags/}" ;;
+              *) echo "refusing: a release runs from a v* tag, not $GITHUB_REF"; exit 1 ;;
+            esac
           fi
           echo "tag $VERSION, Cargo.toml $CARGO"
           test "$VERSION" = "v$CARGO"
@@ -94,8 +91,6 @@ jobs:
             os: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
         with:
@@ -174,7 +169,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [version-guard, build]
-    if: github.event_name != 'pull_request'
+    if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       # contents: write uploads the assets; id-token: write is the OIDC token for keyless cosign
@@ -184,8 +179,6 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
         with:
@@ -258,7 +251,7 @@ jobs:
           set -euo pipefail
           cd release-assets
           cosign verify-blob \
-            --certificate-identity-regexp 'https://github.com/pulseengine/zwinger/.github/workflows/release.yml@.*' \
+            --certificate-identity-regexp '^https://github\.com/pulseengine/zwinger/\.github/workflows/release\.yml@refs/tags/v.*$' \
             --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --bundle SHA256SUMS.txt.cosign.bundle SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
