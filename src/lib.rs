@@ -1,9 +1,11 @@
 //! zwinger: confine an AI coding-agent session with supported OS mechanisms.
 //!
-//! Status: bootstrap. The profile and its fail-closed loading exist; no enforcement backend does
-//! yet, so `run` refuses (REQ-ZW-001). Planned backends: macOS Endpoint Security descendant clients
-//! (REQ-ZW-003, `bridge/`), Linux Landlock + seccomp (REQ-ZW-004).
+//! The profile and its fail-closed loading are in `profile` (REQ-ZW-001, REQ-ZW-002). The Linux
+//! backend (Landlock plus a seccomp socket filter) is in `linux` (REQ-ZW-004..006, REQ-ZW-008).
+//! The macOS backend (Endpoint Security descendant clients, REQ-ZW-003, `bridge/`) does not
+//! exist yet, so `run` refuses there.
 
+pub mod linux;
 pub mod profile;
 
 /// Exit status when zwinger refuses to start a session (EX_CONFIG).

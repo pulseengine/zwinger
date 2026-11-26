@@ -36,12 +36,15 @@ fn check_accepts_a_valid_profile() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
+// rivet: verifies REQ-ZW-001
 #[test]
 fn check_refuses_a_missing_profile() {
     let o = zwinger(&["check", "/nonexistent/zwinger.toml"]);
     assert_eq!(o.status.code(), Some(78));
 }
 
+// rivet: verifies REQ-ZW-001
+#[cfg(not(target_os = "linux"))]
 #[test]
 fn run_never_starts_unconfined() {
     // A valid profile, a harmless command: still refused, because no backend exists (REQ-ZW-001).

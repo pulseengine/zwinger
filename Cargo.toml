@@ -13,3 +13,10 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
 [dev-dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.8"
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
