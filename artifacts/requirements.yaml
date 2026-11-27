@@ -1266,8 +1266,9 @@ artifacts:
       (EPERM) while the unconfined control connects; binding in a write tree works; the session's
       own socket in ZWINGER_SOCKET_DIR connects; a socket in a listed unix_socket_dirs entry
       connects. tests/linux.rs unix_sockets_connect_only_in_socket_directories does the same at
-      Landlock ABI 9 (CI kernels below ABI 9 skip it, and unix_sockets_follow_the_kernel_abi
-      covers AF_UNIX being refused there). Unit tests: the macOS policy rules, the session
+      Landlock ABI 9. No CI kernel is at ABI 9 yet, so on Linux the connect restriction is verified
+      only on macOS until zwinger#41 adds such a job; unix_sockets_follow_the_kernel_abi covers
+      AF_UNIX being refused below ABI 9. Unit tests: the macOS policy rules, the session
       directory, the bounded socket listing.
     links:
       - type: verifies

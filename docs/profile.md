@@ -77,3 +77,5 @@ While `unix_sockets` is `confined`, the session may create sockets in its write 
   ```
 
 A socket elsewhere, including one inside a write tree, may belong to a server outside the session, so connecting to it fails. On Linux this uses Landlock's UNIX-connect right (ABI 9); below ABI 9, `socket(AF_UNIX)` is refused under mode `none`. On macOS it uses Seatbelt's outbound rules. `zwinger check` lists sockets that already exist in write trees, searching three levels deep.
+
+Verification status: the macOS end-to-end tests cover this rule fully. On Linux it needs Landlock ABI 9, and no CI kernel is at ABI 9 yet, so the Linux connect restriction is verified only on macOS until a CI job on an ABI 9 kernel runs its test (#41). On a kernel at ABI 9 or later the restriction is enforced; below ABI 9, `socket(AF_UNIX)` is refused under mode `none`.
