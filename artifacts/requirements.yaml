@@ -649,9 +649,13 @@ artifacts:
       Owner decision, 2026-11-27, from four options: spar emits a fragment, spar emits whole
       profiles, zwinger reads AADL, or a check only.
     decision: >
-      spar's instance model is the source for a node's network peers. A converter outside the
-      zwinger binary turns it into a YAML fragment, and the filesystem rules stay hand-written
-      in the profile. CI regenerates the fragment and fails on any diff.
+      spar's instance model is the source for a session's network section. spar itself writes
+      it, as `spar emit --format zwinger-profile` with rivet-yaml (seam zwinger#17), from the
+      Zwinger_Profile property set (architecture/zwinger_profile.aadl) and the hosts reached
+      through the session's egress feature. The filesystem rules and mach_lookup stay
+      hand-written in the profile. architecture/expected/ holds the fragments the reference
+      mesh must produce; tests/architecture.rs parses them as profiles and ties their hosts to
+      the model, and once the emitter is released and pinned, CI diffs its output against them.
     rationale: >
       Everything zwinger parses runs before confinement and is trusted; an AADL parser there
       would grow that base for no runtime benefit. Generating the peers removes the drift a

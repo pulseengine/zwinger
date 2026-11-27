@@ -11,7 +11,8 @@
 #      terminal, and confined is entered only from preflight;
 #   6. both roots instantiate with the expected number of components.
 #
-# Usage: architecture/check.sh [DIR]   (DIR holds zwinger.aadl and reference_mesh.aadl)
+# Usage: architecture/check.sh [DIR]   (DIR holds zwinger.aadl, zwinger_profile.aadl and
+#        reference_mesh.aadl)
 # Needs spar and jq on PATH.
 set -euo pipefail
 
@@ -29,7 +30,7 @@ analyze() {
 }
 
 node="$(analyze Zwinger::Node.Confined "$dir/zwinger.aadl")"
-mesh="$(analyze Zwinger_Reference_Mesh::Mesh.TwoNodes "$dir/zwinger.aadl" "$dir/reference_mesh.aadl")"
+mesh="$(analyze Zwinger_Reference_Mesh::Mesh.TwoNodes "$dir/zwinger.aadl" "$dir/zwinger_profile.aadl" "$dir/reference_mesh.aadl")"
 
 for pair in "node:$node" "mesh:$mesh"; do
   name="${pair%%:*}"
@@ -39,7 +40,7 @@ for pair in "node:$node" "mesh:$mesh"; do
   # Zero diagnostics means spar analysed nothing, not that the model is clean.
   if [ "$n" -eq 0 ]; then echo "FAIL $name: spar returned no diagnostics at all"; fail=1; fi
   comps="$(jq '[.instance | .. | objects | select(has("category"))] | length' <<<"$json")"
-  want=7; [ "$name" = mesh ] && want=19   # 2 nodes x 7, warte, 2 NICs, LAN, root
+  want=7; [ "$name" = mesh ] && want=21   # 2 nodes x 7, warte, 2 NICs, LAN, 2 remote services, root
   if [ "$comps" -ne "$want" ]; then
     echo "FAIL $name: instance has $comps components, expected $want"; fail=1
   else

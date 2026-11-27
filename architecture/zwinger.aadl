@@ -43,6 +43,13 @@ public
       Data_Model::Data_Representation => Struct;
   end Command;
 
+  -- A connection the session initiates to a remote service. Data ports are one-way: the port
+  -- means "may connect to"; replies are not modelled.
+  data Traffic
+    properties
+      Data_Model::Data_Representation => Struct;
+  end Traffic;
+
   -- The host's resources as seen by the confined command: files, sockets, devices.
   data HostAccess
     properties
@@ -55,6 +62,7 @@ public
       kernel_in  : in data port KernelAbi;
       events_out : out data port RunEvent;
       access_out : out data port HostAccess;  -- what the confined command does to its host
+      egress     : out data port Traffic;     -- network.allow is derived from these (zwinger#17)
       -- Lifecycle triggers, raised by the launcher (REQ-ZW-018).
       profile_loaded : in event port;
       profile_bad    : in event port;
@@ -190,6 +198,7 @@ public
   system Node
     features
       sync_out : out data port RunEvent;
+      egress   : out data port Traffic;
   end Node;
 
   system implementation Node.Confined
@@ -206,6 +215,7 @@ public
       c_access  : port session.access_out -> resources.access_in;
       c_events  : port session.events_out -> probe.events_in;
       c_sync    : port probe.sync_out -> sync_out;
+      c_egress  : port session.egress -> egress;
       t_loaded  : port launcher.profile_loaded -> session.profile_loaded;
       t_bad     : port launcher.profile_bad -> session.profile_bad;
       t_ok      : port launcher.preflight_ok -> session.preflight_ok;
