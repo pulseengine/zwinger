@@ -122,7 +122,7 @@ Three planted bugs must each fail verification. Kani (CBMC) and Verus (Z3) check
 - the Pi's event stream to warte has no worst-case traversal time bound, or one above 1 ms.
 - the session lifecycle (modes `loading`, `preflight`, `confined`, `refused`, `exited`) has a dead transition, leaves `refused` or `exited`, or enters `confined` from anything but `preflight`.
 
-Five planted models must each fail the gate. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
+Five planted models must each fail the gate. `architecture/zwinger_profile.aadl` is the property set spar reads to generate a session's network section (`spar emit --format zwinger-profile`, seam #17); `architecture/expected/` holds the fragments the reference mesh must produce. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
 
 ## Releases
 
