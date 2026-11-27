@@ -1034,3 +1034,45 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-ZW-024
+  - id: REQ-ZW-022
+    type: requirement
+    title: "Code-injecting environment variables are removed before exec unless the profile keeps them"
+    status: approved
+    description: >
+      zwinger removes a documented list of variables (dynamic-loader injection, shell startup
+      files, build and VCS wrappers; src/env.rs) from the command's environment, and names what
+      it removed on the startup line. env_keep keeps a listed variable; an env_keep entry that
+      is not on the list is refused when the profile loads.
+
+  - id: DD-ZW-021
+    type: design-decision
+    title: "zwinger scrubs a fixed list at exec, with env_keep, as a layer independent of kapsel"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over an allowlist-only environment and no scrub.
+    decision: >
+      A fixed list with exact names and the DYLD_ prefix, removed with Command::env_remove before
+      exec. The profile's env_keep may only name listed variables.
+    rationale: >
+      An allowlist-only environment breaks agents and builds until every profile lists what they
+      need. A fixed list removes the known code-injection channels while keeping ordinary
+      variables. The limit is stated: the agent can set these for its own children, which stay
+      confined by the kernel sandbox, and kapsel's host applies its own allowlist to native
+      tools.
+    links:
+      - type: satisfies
+        target: REQ-ZW-022
+
+  - id: VER-ZW-010
+    type: verification
+    title: "Scrubbed variables are removed, kept ones and ordinary ones pass through"
+    status: implemented
+    method: test
+    description: >
+      src/env.rs unit tests (removal, env_keep, the DYLD_ prefix without lookalikes, case
+      sensitivity, refusing an env_keep name not on the list); tests/cli.rs refuses env_keep:
+      [PATH] at check; tests/linux.rs and tests/macos.rs run a confined env with scrubbed,
+      kept and ordinary variables set and check its output and the startup line.
+    links:
+      - type: verifies
+        target: REQ-ZW-022

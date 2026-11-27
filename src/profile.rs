@@ -52,6 +52,10 @@ pub struct Profile {
     /// there is nothing for it to allow.
     #[serde(default)]
     pub mach_lookup: Vec<String>,
+    /// Variables on zwinger's scrub list (src/env.rs) that the session keeps. Every other
+    /// scrubbed variable is removed before exec.
+    #[serde(default)]
+    pub env_keep: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -253,6 +257,7 @@ impl Profile {
                 return Err(format!("mach_lookup: {m:?} is not an exact service name"));
             }
         }
+        crate::env::validate_keep(&self.env_keep)?;
         Ok(())
     }
 }

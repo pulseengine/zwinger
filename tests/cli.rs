@@ -225,4 +225,12 @@ fn check_refuses_zwinger_invoked_through_a_symlink_inside_a_write_grant() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!err.contains("lies inside write grant"), "{err}");
     let _ = std::fs::remove_dir_all(&root);
+// rivet: verifies REQ-ZW-022
+#[test]
+fn env_keep_naming_a_variable_zwinger_does_not_remove_is_refused() {
+    let p = profile("name: \"s\"\nenv_keep: [\"PATH\"]\n");
+    let o = zwinger(&["check", p.0.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(78));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("env_keep: \"PATH\""), "{err}");
 }
