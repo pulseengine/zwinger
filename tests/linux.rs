@@ -872,7 +872,9 @@ fn runner_tree() -> (Dir, PathBuf) {
 /// What the runner does when it starts, as far as the profile decides it: list the home and
 /// every directory above it (the listener's ancestor check), write in _work, and fail to copy
 /// run-helper.sh into the read-only home. A sibling runner's file is listable by name but not
-/// readable. Exit codes name the step that failed.
+/// readable: the open fails with EACCES, from Landlock, since the sibling belongs to the same user
+/// here. stat is never restricted by Landlock, with or without list. Exit codes name the step that
+/// failed.
 const RUNNER_START: &str = r#"
 d="$HOME_DIR"
 while :; do ls "$d" > /dev/null || exit 3; [ "$d" = / ] && break; d=$(dirname "$d"); done
@@ -880,6 +882,7 @@ touch "$HOME_DIR/_work/job" || exit 4
 if cp -f "$HOME_DIR/run-helper.sh.template" "$HOME_DIR/run-helper.sh" 2>/dev/null; then exit 5; fi
 ls "$SIBLING" | grep -q secret || exit 6
 if cat "$SIBLING/secret" 2>/dev/null; then exit 7; fi
+cat "$SIBLING/secret" 2>&1 | grep -q "Permission denied" || exit 8
 exit 0
 "#;
 
@@ -909,7 +912,7 @@ fn a_runner_starts_under_the_github_runner_profile() {
         o.status.code(),
         Some(0),
         "step failed (3 list ancestors, 4 write _work, 5 home writable, 6 sibling not listable, \
-         7 sibling readable): {}",
+         7 sibling readable, 8 sibling refused for another reason than EACCES): {}",
         String::from_utf8_lossy(&o.stderr)
     );
     // Control: without `list`, the ancestor check fails, as it did on the first canary.
