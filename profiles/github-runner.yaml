@@ -29,7 +29,12 @@
 # - directory names: the runner checks that it can list its root and every directory above it,
 #   and Landlock's listing right covers a directory and everything beneath it, so `list: ["/"]`
 #   lets jobs list directory names anywhere the runner user's permissions allow. No file
-#   becomes readable through it, and other runners' homes stay closed by their 0700 mode;
+#   becomes readable through it. Other runners' homes stay closed only by their Unix mode, and
+#   that mode is the deployment's to enforce, not zwinger's (next item);
+# - file modes and owners: Landlock does not restrict chmod, chown or other metadata changes, so
+#   a job can loosen the mode of anything its user owns, its read-only home included. Make each
+#   home owned by root (e.g. root:runnerN 0750, with the write directories owned by the runner
+#   user), so the runner user cannot change it;
 # - file metadata (stat): Landlock never restricts it, with or without list; it stays visible
 #   wherever the runner user may traverse, as before;
 # - the network (mode: unfiltered): sccache and Bazel use loopback ports and Landlock filters

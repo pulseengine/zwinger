@@ -1308,8 +1308,9 @@ artifacts:
     rationale: >
       Landlock has no non-recursive listing right and / is an ancestor of every root, so a
       listing grant on the ancestors is a listing grant on everything the runner user may list.
-      It exposes directory names only; file contents need read, and other runners' homes stay
-      closed by their 0700 mode. A write grant on run-helper.sh instead would let a job change
+      It exposes directory names only; file contents need read. Other runners' homes stay closed
+      by their Unix mode, which the deployment enforces (root-owned homes), since Landlock does
+      not restrict chmod. A write grant on run-helper.sh instead would let a job change
       what the next start runs.
     links:
       - type: satisfies
