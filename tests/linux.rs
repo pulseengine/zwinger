@@ -543,12 +543,16 @@ fn check_reports_what_run_would_enforce_without_running_anything() {
     assert!(lines[1].contains("network: none"), "{out}");
 }
 
-/// A copy of /bin/true in the scene's write tree, executable.
+/// A copy of /bin/true in the scene's write tree, executable. Copied by a child `cp`, not
+/// in this process: a write descriptor held here would be inherited by another test thread's
+/// fork, and exec of the file would then fail with ETXTBSY until that child execs.
 fn copy_true(sc: &Scene) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let t = sc.path("w/t");
-    std::fs::copy(Path::new("/bin/true").canonicalize().unwrap(), &t).unwrap();
-    std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let src = Path::new("/bin/true").canonicalize().unwrap();
+    let ok = Command::new("cp").arg(&src).arg(&t).status().unwrap();
+    assert!(ok.success(), "cp {} {}", src.display(), t.display());
+    let ok = Command::new("chmod").arg("755").arg(&t).status().unwrap();
+    assert!(ok.success());
     t
 }
 
