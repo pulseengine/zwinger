@@ -501,8 +501,9 @@ pub fn not_enforced(p: &Profile) -> Vec<&'static str> {
     gaps
 }
 
-/// Rules for `network.allow_loopback_ports`: IPv4 and IPv6 TCP sockets, connecting only to
-/// loopback on the listed ports (Seatbelt's `localhost` matches the loopback addresses).
+/// Rules for `network.allow_loopback_ports`: IPv4 and IPv6 TCP sockets, connecting only to this
+/// host on the listed ports. Seatbelt's `localhost` matches this host's own addresses, not only
+/// loopback (measured in tests/macos.rs).
 pub fn loopback_rules(ports: &[u16]) -> String {
     if ports.is_empty() {
         return String::new();

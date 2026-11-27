@@ -2119,6 +2119,7 @@ mod proofs {
             },
             allow: Vec::new(),
             allow_local_binding: false,
+            allow_loopback_ports: Vec::new(),
         };
         let e = enforcement(abi, &network).expect("abi >= MIN_ABI is accepted");
         let program = seccomp_program(arch, e.unix_sockets, e.inet_sockets);
@@ -2374,6 +2375,7 @@ mod proofs {
             },
             allow: Vec::new(),
             allow_local_binding: false,
+            allow_loopback_ports: Vec::new(),
         };
         match enforcement(abi, &network) {
             Err(_) => {

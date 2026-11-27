@@ -24,7 +24,7 @@ network:
   mode: none                 # none (default) or unfiltered (paths confined, network not)
   allow: []                  # exact host names; empty = no egress
   allow_local_binding: false
-  allow_loopback_ports: []   # macOS: loopback TCP ports to connect to under mode none
+  allow_loopback_ports: []   # macOS: TCP ports on this host to connect to under mode none
   unix_sockets: confined     # or unfiltered: AF_UNIX allowed and not confined
 ```
 
@@ -34,7 +34,7 @@ Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_
 
 ## Loopback ports (macOS)
 
-Under `mode: none`, `allow_loopback_ports` lets the session connect to the listed TCP ports on the loopback address and nowhere else. A typical use is a network proxy that runs outside the session, listens on a fixed port and allows only the domains you name. The session reaches it through `HTTPS_PROXY` and `HTTP_PROXY` (with `NO_PROXY=127.0.0.1,localhost`). A program that ignores those variables gets no network, which is the fail-closed outcome.
+Under `mode: none`, `allow_loopback_ports` lets the session connect to the listed TCP ports on this host and nowhere else. Seatbelt matches this host by its own addresses, not only 127.0.0.1 and ::1, so a service that listens on all interfaces is reachable on its port. Bind such a proxy to 127.0.0.1. Other hosts are refused on every port, listed or not. A typical use is a network proxy that runs outside the session, listens on a fixed port and allows only the domains you name. The session reaches it through `HTTPS_PROXY` and `HTTP_PROXY` (with `NO_PROXY=127.0.0.1,localhost`). A program that ignores those variables gets no network, which is the fail-closed outcome.
 
 On Linux a profile with `allow_loopback_ports` is refused (exit 78): Landlock filters ports, not addresses, so it would allow the port on every host.
 
