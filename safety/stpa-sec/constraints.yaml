@@ -13,7 +13,7 @@ artifacts:
     description: >
       Before exec, zwinger refuses (exit 78) any profile the kernel and backend cannot enforce as
       written, and a refused session never execs. Enforced by the linked requirements (CLI tests, Kani over enforcement()); lifecycle
-      conformance of real runs: zwinger#22, in review.
+      conformance of real runs: tests/lifecycle.rs (zwinger#22, v0.1.1).
     links:
       - type: prevents-sec-hazard
         target: SH-ZW-3
@@ -115,7 +115,7 @@ artifacts:
     description: >
       Files that a later run of zwinger, or a tool the operator runs outside zwinger, will load or
       execute cannot be changed by the session. The profile file, the zwinger executable and its
-      invocation path are refused inside write grants once zwinger#32 merges; the rest is tracked
+      invocation path are refused inside write grants (zwinger#32, v0.1.1); the rest is tracked
       with the owner.
     links:
       - type: prevents-sec-hazard
@@ -145,7 +145,7 @@ artifacts:
       environment allowlist and a per-tool profile for children; zwinger grants Execute only on
       exec files and exec trees and removes code-injecting variables. Partly enforced
       by the linked requirements (the plan in ZWINGER_GRANTS) and the environment scrub
-      (zwinger#25, in review); the
+      (zwinger#25, v0.1.1); the
       host side is kiln's and kapsel's (kapsel#140); zwinger's exec lists: zwinger#31.
     links:
       - type: prevents-sec-hazard
@@ -273,3 +273,15 @@ artifacts:
     links:
       - type: prevents-sec-hazard
         target: SH-ZW-16
+
+  - id: SC-ZW-22
+    type: sec-constraint
+    title: Session output passes review gates zwinger does not own before it ships
+    status: approved
+    description: >
+      Accepted residual, outside zwinger: what a session writes inside its grants is reviewed
+      before it leaves (pull-request review, CI, signed releases). zwinger does not enforce this
+      and claims nothing about it; it keeps the session from changing files later runs trust, and records each run for the operator (warte).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-17

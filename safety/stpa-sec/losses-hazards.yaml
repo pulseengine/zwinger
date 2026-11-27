@@ -344,3 +344,19 @@ artifacts:
         target: SL-ZW-2
       - type: leads-to-sec-loss
         target: SL-ZW-4
+
+  - id: SH-ZW-17
+    type: sec-hazard
+    title: Output a session wrote inside its grants is shipped without independent review
+    status: approved
+    description: >
+      Code, configuration or release content the session was allowed to write reaches a push,
+      merge or release with no check by anyone other than the session that wrote it. zwinger
+      cannot see this state: the writes were inside the grants, so confinement worked as
+      specified.
+    fields:
+      cia-impact: [integrity]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-6

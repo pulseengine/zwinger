@@ -9,8 +9,8 @@ artifacts:
     description: >
       A runner image is rebuilt on a kernel with Landlock ABI 2, which cannot restrict truncate.
       If zwinger confined what it could and continued, a job could truncate files outside its
-      grants. zwinger refuses below ABI 3; lifecycle conformance of real runs (zwinger#22, in review)
-      will hold the binary to "refused means not exec'd".
+      grants. zwinger refuses below ABI 3; lifecycle conformance of real runs (tests/lifecycle.rs, zwinger#22)
+      holds the binary to "refused means not exec'd".
     links:
       - type: caused-by-sec-uca
         target: SUCA-ZW-1
@@ -87,7 +87,7 @@ artifacts:
     description: >
       If the record were finished before the filter was installed and the install then failed,
       warte would hold "confined" for a run that refused or ran less confined. zwinger finishes
-      the record only after confine() returns; the lifecycle test (zwinger#22, in review) will map
+      the record only after confine() returns; the lifecycle test (zwinger#22) maps
       a confined record with exit 78 to a transition the model forbids.
     links:
       - type: caused-by-sec-uca
@@ -303,7 +303,7 @@ artifacts:
     description: >
       The agent writes build.rs and asks for cargo build; cargo runs it in target/. With exec trees
       limited to target/ and the toolchain, the code runs there but nowhere else (zwinger#31), and the
-      environment scrub (zwinger#25, in review) will remove RUSTC_WRAPPER and LD_PRELOAD. The kernel cannot tell cargo's
+      environment scrub (zwinger#25) removes RUSTC_WRAPPER and LD_PRELOAD unless the profile keeps them. The kernel cannot tell cargo's
       children from a hook's; per-tool Landlock on Linux (D) will.
     links:
       - type: caused-by-sec-uca

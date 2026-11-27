@@ -1051,6 +1051,9 @@ artifacts:
       stated and as resolved, and when the profile file has more than one hard link. Both are
       read again by the next run with the operator's full authority, so the session must not be
       able to change them.
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-9
 
   - id: VER-ZW-012
     type: verification
