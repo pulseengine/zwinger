@@ -17,6 +17,7 @@ read_if_present: [/opt]                # skipped when absent
 write: [/home/me/git/demo, /tmp/demo, /dev/null]
 deny_read: [/home/me/.ssh]             # carve-outs
 deny_write: []
+noexec: [/tmp/demo]                 # nothing executes from here
 mach_lookup: [com.apple.server.bluetooth]  # macOS only
 
 network:
@@ -37,6 +38,7 @@ Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_
 - the kernel's Landlock ABI is below 3 (Linux 6.2), which cannot restrict `truncate(2)`;
 - a granted path does not exist, or resolves through a symlink into a denied tree;
 - a `deny_read` lies inside a granted tree, or a `deny_write` inside a write tree, because Landlock is an allow list and cannot carve a subtree out of a granted one;
+- a `noexec` tree lies inside a wider grant, whose execute right would still cover it;
 - `network.allow` names hosts or `allow_local_binding` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.
 
 No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works. `ioctl` with `TIOCSTI` or `TIOCLINUX` is refused, so the session cannot push input into the caller's terminal for the unconfined shell to run.
@@ -67,8 +69,9 @@ Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes o
 - from any kernel ABI and network mode, `socket(2)` is allowed exactly as REQ-ZW-005, REQ-ZW-006 and REQ-ZW-009 state;
 - for every ABI, the backend never opens a channel the profile did not state and never asks Landlock for a right the kernel lacks.
 - if the carve-out rules accept a profile, every path beneath a `deny_read` or `deny_write` stays uncovered by the grants Landlock receives, except a read exception stated inside that `deny_read` (stated and resolved paths vary independently, so symlink aliasing is included).
+- if the noexec rule accepts a profile, no grant covering a path beneath a `noexec` tree keeps the execute right.
 
-Eleven planted bugs must each be rejected, so a proof that stopped looking fails the job. The trusted base is the classic-BPF model in `bpf_run`, the shared syscall constants, `within` (checked exhaustively against `Path::starts_with` by unit test) and Kani/CBMC; `tests/linux.rs` runs the same filter in real kernels.
+Twelve planted bugs must each be rejected, so a proof that stopped looking fails the job. The trusted base is the classic-BPF model in `bpf_run`, the shared syscall constants, `within` (checked exhaustively against `Path::starts_with` by unit test) and Kani/CBMC; `tests/linux.rs` runs the same filter in real kernels.
 
 ## Releases
 

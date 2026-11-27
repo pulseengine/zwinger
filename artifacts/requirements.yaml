@@ -133,6 +133,19 @@ artifacts:
       kernel. The command line follows the pulseengine CLI conventions (--version and -V print
       "zwinger SEMVER", --help exits 0, an unknown flag or command exits 2).
 
+  - id: REQ-ZW-013
+    type: requirement
+    title: "Execution can be refused in trees the session may read or write"
+    status: approved
+    description: >
+      A profile's noexec list names trees nothing may be executed from (a scratch or download
+      directory), so a session cannot write a program and then run it there. On Linux every
+      grant at or beneath a noexec tree is given to Landlock without the execute right, and a
+      noexec tree strictly inside a wider grant is refused, because that grant's execute right
+      would still cover it. execve of a file beneath the tree then fails with EACCES. Not
+      covered: code run without execve, by an interpreter reading a script (sh script) or by the
+      dynamic loader mapping a binary (ld.so binary), which Landlock does not see.
+
   - id: DD-ZW-001
     type: design-decision
     title: "A Rust launcher with typed profiles that refuses when unsure"
@@ -294,13 +307,35 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-001
 
+  - id: DD-ZW-008
+    type: design-decision
+    title: "noexec drops Landlock's execute right per grant, and refuses what a wider grant covers"
+    status: approved
+    description: >
+      noexec is enforced with the rights given to each Landlock rule, not with a deny, because
+      Landlock only grants.
+    decision: >
+      A grant at or beneath a noexec tree is added without AccessFs::Execute. A noexec tree
+      strictly inside a wider grant is refused at plan time. A noexec tree that no grant reaches
+      is accepted, because nothing there is executable anyway, and refusing it would break a
+      profile on a host where an optional grant is absent.
+    rationale: >
+      Landlock adds rights along a path, so the only way to keep execve out of a tree is for
+      every rule that covers it to lack Execute. That holds exactly when no grant strictly
+      contains the tree, which is the rule the planner checks and the Kani harness proves.
+      Refusing the other case keeps zwinger's rule that a profile is enforced as written or not
+      at all.
+    links:
+      - type: satisfies
+        target: REQ-ZW-013
+
   - id: VER-ZW-005
     type: verification
     title: "Kani proofs: seccomp program, profile-to-verdict, enforcement decisions"
     status: implemented
     method: analysis
     description: >
-      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 24 harnesses over the shipped
+      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 26 harnesses over the shipped
       code in src/linux.rs mod proofs. For x86_64 and aarch64 in all four socket modes, the
       seccomp program is well formed (every instruction in the emitted subset, every jump inside
       the program, a ret last) and its verdict equals seccomp_spec for every 32-bit audit_arch,
@@ -323,6 +358,9 @@ artifacts:
       grant unchecked) must fail. Their domain is normal paths of up to 4 bytes over {'/', 'a',
       'b'}; within() itself is checked against Path::starts_with (after normalize) for every pair
       of paths up to 5 bytes over {'/', 'a', 'b', '.'} by unit test.
+      noexec rule (REQ-ZW-013): if first_noexec_violation accepts the grants, every grant that
+      covers a path beneath a noexec tree has lost execute (may_exec is false), over the same
+      path domain; one planted-bug control (the inside-grant rule dropped) must fail.
     links:
       - type: verifies
         target: REQ-ZW-008
@@ -332,6 +370,8 @@ artifacts:
         target: REQ-ZW-006
       - type: verifies
         target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-013
 
   - id: VER-ZW-001
     type: verification
