@@ -22,7 +22,7 @@ on:
   push:
     tags:
       - "v*"
-  # Pull requests that touch the release path build, check and smoke-test both archives, so the
+  # Pull requests that touch the release path build, check and smoke-test every archive, so the
   # pipeline is exercised before a tag depends on it. Nothing is signed or published for a PR.
   pull_request:
     paths:
@@ -75,9 +75,8 @@ jobs:
           test "$VERSION" = "v$CARGO"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  # Static musl binaries: releases ship the Linux backend only (macOS is a Seatbelt prototype),
-  # and a launcher with no dynamic loader runs on any glibc or musl host, CI runners and the
-  # Raspberry Pi alike. Both are built natively, so each smoke test executes its own tarball.
+  # Static musl binaries for Linux: a launcher with no dynamic loader runs on any glibc or musl
+  # host, CI runners and the Raspberry Pi alike. Both are built natively, so each smoke test executes its own tarball.
   build:
     name: Build ${{ matrix.target }}
     needs: [version-guard]
@@ -168,9 +167,88 @@ jobs:
           path: ${{ env.ARCHIVE }}
           retention-days: 7
 
+  # macOS (Seatbelt backend). Built natively on Apple silicon; the binary links only the system
+  # libraries, and the packaged binary confines a process on this runner before it ships.
+  build-macos:
+    name: Build aarch64-apple-darwin
+    needs: [version-guard]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin
+
+      - name: Build
+        run: cargo build --locked --release --target aarch64-apple-darwin
+
+      - name: The binary links only system libraries
+        run: |
+          set -euo pipefail
+          otool -L target/aarch64-apple-darwin/release/zwinger | tail -n +2 | tee deps.txt
+          if grep -v -E '^[[:space:]]+(/usr/lib/|/System/Library/)' deps.txt; then
+            echo "non-system library dependency"; exit 1
+          fi
+
+      # strip removes the ad-hoc signature that Apple silicon requires to run a binary, so the
+      # binary is signed again (ad hoc) after stripping.
+      - name: Strip and sign ad hoc
+        run: |
+          set -euo pipefail
+          strip target/aarch64-apple-darwin/release/zwinger
+          codesign --force --sign - target/aarch64-apple-darwin/release/zwinger
+          codesign --verify --verbose target/aarch64-apple-darwin/release/zwinger
+
+      - name: Package archive
+        env:
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="zwinger-${VERSION}-aarch64-apple-darwin.tar.gz"
+          mkdir -p staging
+          cp target/aarch64-apple-darwin/release/zwinger README.md LICENSE staging/
+          tar -czf "$ARCHIVE" -C staging .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Smoke-test the packaged tarball
+        env:
+          VERSION: ${{ needs.version-guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p smoke
+          tar -xzf "$ARCHIVE" -C smoke
+          Z=smoke/zwinger
+          test "$("$Z" --version)" = "zwinger ${VERSION#v}"
+          "$Z" --help > /dev/null
+          set +e; "$Z" --no-such-flag 2>/dev/null; rc=$?; set -e
+          test "$rc" = 2
+          set +e; "$Z" check /nonexistent.yaml; rc=$?; set -e
+          test "$rc" = 78
+          work="$(cd "$(mktemp -d)" && pwd -P)"; secret="$(cd "$(mktemp -d)" && pwd -P)"
+          conf="$(cd "$(mktemp -d)" && pwd -P)"
+          echo secret > "$secret/token"
+          {
+            echo 'name: release-smoke'
+            echo 'read: ["/usr", "/bin", "/System", "/Library", "/private/etc", "/private/var/db"]'
+            echo "write: [\"$work\", \"/dev/null\"]"
+          } > "$conf/profile.yaml"
+          "$Z" run "$conf/profile.yaml" -- /bin/bash -c "
+            touch '$work/inside' || exit 1
+            if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
+            echo 'write inside: ok; read outside: refused'
+          "
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binary-aarch64-apple-darwin
+          path: ${{ env.ARCHIVE }}
+          retention-days: 7
+
   create-release:
     name: Create GitHub Release
-    needs: [version-guard, build]
+    needs: [version-guard, build, build-macos]
     if: github.event_name != 'pull_request' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -196,7 +274,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
-          test "$(find release-assets -name "*.tar.gz" | wc -l)" = 2
+          test "$(find release-assets -name "*.tar.gz" | wc -l)" = 3
           ls -la release-assets/
 
       # Before the sums, so the SBOM's digest is signed with everything else.

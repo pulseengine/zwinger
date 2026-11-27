@@ -31,7 +31,7 @@ artifacts:
   - id: REQ-ZW-028
     type: requirement
     title: "Releases ship a macOS binary held to the Linux binaries' bar"
-    status: approved
+    status: implemented
     release: v0.2.0
     description: >
       Each release publishes an aarch64-apple-darwin binary, listed in the cosign-signed
@@ -226,3 +226,19 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-ZW-040
+
+  - id: VER-ZW-017
+    type: verification
+    title: "The macOS release archive is built, checked and smoke-tested before it ships"
+    status: implemented
+    method: test
+    description: >
+      release.yml build-macos, on every pull request touching the release path and on each tag:
+      the binary links only /usr/lib and /System/Library libraries; it is stripped and signed ad
+      hoc, and codesign verifies it; the packaged binary reports the tag's version, exits 2 on an
+      unknown flag and 78 on a missing profile, and under a Seatbelt profile writes inside its
+      write grant while a read outside is refused. create-release requires three archives, so
+      the macOS archive enters SHA256SUMS.txt and the provenance attestation.
+    links:
+      - type: verifies
+        target: REQ-ZW-028
