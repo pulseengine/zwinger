@@ -1,0 +1,53 @@
+# Confinement controls, stand-in half (owner-approved CI dogfooding, 2026-11-27). See
+# confinement/README.md. The confined-runner half is confinement-runner.yml, which has no
+# pull_request trigger, so no pull request can reach the runner under test.
+#
+# On a disposable hosted runner, the attacks against decoys must all succeed (every control
+# FAIL-OPEN), which proves each attack works when nothing stops it.
+name: Confinement controls
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: confinement-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  stand-in:
+    name: Confinement controls (stand-in, unconfined)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Decoys the attacks aim at
+        run: |
+          mkdir -p /tmp/zwinger-decoy
+          echo secret > /tmp/zwinger-decoy/secret
+          echo '#!/bin/sh' > /tmp/zwinger-decoy/run.sh
+      - name: plant (stand-in manifest)
+        id: plant
+        continue-on-error: true
+        uses: pulseengine/plant@c792431b16fc050eb08e5f92fd25e226944a2d37 # v0.5.1
+        with:
+          manifest: ci-controls.confined.stand-in.toml
+          version: 0.5.1
+          format: json
+      - name: Every control is FAIL-OPEN
+        env:
+          REPORT: ${{ steps.plant.outputs.report }}
+        run: |
+          cat "$REPORT"
+          n=$(grep -c '^\[\[control\]\]' ci-controls.confined.stand-in.toml)
+          test "$n" -gt 0
+          jq -e --argjson n "$n" \
+            '(.controls|length)==$n and ([.controls[]|select(.reason|startswith("FAIL-OPEN"))]|length)==$n' \
+            "$REPORT"

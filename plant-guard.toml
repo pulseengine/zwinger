@@ -1,0 +1,9 @@
+# plant guard config: the self-hosted runner labels zwinger's workflows may select (ci.yml's
+# rust-cpu pool and the confined runner), and the workflows exempt from the fork guard.
+labels = ["self-hosted", "linux", "x64", "rust-cpu", "confined"]
+
+# Checked by guard, not trusted: it holds only while every trigger of this workflow is push,
+# schedule, workflow_dispatch or release.
+[[exempt]]
+workflow = "confinement-runner.yml"
+reason = "push to main, schedule and workflow_dispatch only; no pull request reaches the confined runner"

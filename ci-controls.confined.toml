@@ -1,0 +1,29 @@
+# Confinement pack, real gate: runs on the confined runner (label pinned) and every control must
+# PASS: the baseline runs confined, and each attack is refused by the kernel with a denial the
+# regex names. See confinement/README.md. The decoy paths are created by the runner deploy,
+# owned by the runner user and outside every grant.
+
+[[control]]
+id = "confined-write-decoy"
+check = "Confinement controls"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-write-decoy"
+stderr_or_stdout_matches = "Permission denied|EACCES"
+[control.env]
+ZW_WRITE_TARGET = "/var/lib/zwinger-probe/write-target"
+
+[[control]]
+id = "confined-read-decoy"
+check = "Confinement controls"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-read-decoy"
+stderr_or_stdout_matches = "Permission denied|EACCES"
+[control.env]
+ZW_READ_TARGET = "/var/lib/zwinger-probe/secret"
+
+[[control]]
+id = "confined-replace-runner-file"
+check = "Confinement controls"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-replace-runner-file"
+stderr_or_stdout_matches = "Permission denied|EACCES|Read-only file system"

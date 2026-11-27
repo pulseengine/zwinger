@@ -1,0 +1,40 @@
+# Confinement controls, confined-runner half. See confinement/README.md.
+#
+# On the confined runner (label pinned), every control must PASS: the baseline runs under
+# zwinger, and each attack is refused. There is no pull_request trigger, so no pull request
+# (fork or not) can reach the runner under test. The job is off until the repository variable
+# CONFINED_RUNNER_ONLINE is "true", so it doesn't queue with no runner to take it. It is not a
+# required check yet: the owner makes it required once a confined runner is online.
+name: Confinement controls (confined runner)
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Nightly: runner auto-updates and host changes happen without a commit.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: confinement-runner
+  cancel-in-progress: false
+
+jobs:
+  confined:
+    name: Confinement controls (confined runner)
+    if: vars.CONFINED_RUNNER_ONLINE == 'true'
+    runs-on: [self-hosted, linux, confined]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: plant (real manifest)
+        uses: pulseengine/plant@c792431b16fc050eb08e5f92fd25e226944a2d37 # v0.5.1
+        with:
+          manifest: ci-controls.confined.toml
+          version: 0.5.1
+          artifact: confinement-controls
