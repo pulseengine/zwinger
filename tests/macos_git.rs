@@ -142,6 +142,13 @@ fn check(extra: impl Fn(&Path) -> String) -> Result<Vec<String>, String> {
         )?,
         false,
     );
+    // Control: a hard link between two files outside .git succeeds, so a refused link below is
+    // the rule and not ln failing for another reason.
+    want(
+        "hard link in the tree",
+        sandboxed(&p, w, "ln b.txt b2.txt")?,
+        true,
+    );
     // A hard link out of .git, then a write through it.
     let before = config(w);
     let linked = sandboxed(&p, w, "ln .git/config cfg")?;
