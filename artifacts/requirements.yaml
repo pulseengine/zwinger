@@ -598,3 +598,133 @@ artifacts:
         target: REQ-ZW-006
       - type: verifies
         target: REQ-ZW-008
+
+  - id: REQ-ZW-016
+    type: requirement
+    title: "The architecture model is analysed in CI and states fail-closed, telemetry and timing"
+    status: approved
+    description: >
+      architecture/zwinger.aadl holds the component type of one confined session and its EMV2
+      error model; architecture/reference_mesh.aadl instantiates two nodes on one LAN. CI runs
+      spar on both roots and fails when spar reports an error, when any ItemCommission
+      propagates (a fault turning into access the profile did not grant), when the pinned
+      telemetry gap changes (a lost event reaching warte unflagged), or when the Pi's event
+      stream has no WCTT bound or one above 1 ms.
+    links:
+      - type: refines
+        target: REQ-ZW-008
+      - type: refines
+        target: REQ-ZW-014
+
+  - id: REQ-ZW-017
+    type: requirement
+    title: "A profile's network peers are generated from the architecture model"
+    status: draft
+    description: >
+      A converter outside the zwinger binary reads spar's instance of a deployment and emits,
+      per node, a YAML fragment with the peers that node's sessions connect to. A profile takes
+      its network section from that fragment; CI regenerates the fragment and fails on a diff.
+      zwinger itself never parses AADL. Waits for the egress design (zwinger#14), which decides
+      what the peers become in enforcement.
+
+  - id: DD-ZW-011
+    type: design-decision
+    title: "The model reaches profiles as a generated fragment; zwinger never parses AADL"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, from four options: spar emits a fragment, spar emits whole
+      profiles, zwinger reads AADL, or a check only.
+    decision: >
+      spar's instance model is the source for a node's network peers. A converter outside the
+      zwinger binary turns it into a YAML fragment, and the filesystem rules stay hand-written
+      in the profile. CI regenerates the fragment and fails on any diff.
+    rationale: >
+      Everything zwinger parses runs before confinement and is trusted; an AADL parser there
+      would grow that base for no runtime benefit. Generating the peers removes the drift a
+      check-only gate would police, and AADL is a poor fit for path rules, so whole-profile
+      generation would make the model harder to read.
+    links:
+      - type: satisfies
+        target: REQ-ZW-017
+
+  - id: DD-ZW-012
+    type: design-decision
+    title: "zwinger publishes the component type and a reference mesh; deployments stay with their owner"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27: smithy deploys, but anyone must be able to do the same.
+    decision: >
+      Package Zwinger (architecture/zwinger.aadl) is the reusable component type: a session
+      with its kernel, profiles, host resources and warte probe, and their error model.
+      Package Zwinger_Reference_Mesh is a public two-node template (an agent node on a Mac, a
+      device node on a Pi, warte on the agent's host) analysed in zwinger's CI. smithy's fleet
+      model imports package Zwinger and binds it to its real hosts in its own repository.
+    rationale: >
+      zwinger is public and host names stay private, so the real fleet cannot live here. A
+      type with no worked instance would leave each deployer to discover the binding alone; the
+      reference mesh is that instance, and CI keeps it analysable.
+    links:
+      - type: satisfies
+        target: REQ-ZW-016
+
+  - id: DD-ZW-013
+    type: design-decision
+    title: "The error model states two top events: fail-closed confinement and silent event loss"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over fail-closed only and a full mesh failure model.
+    decision: >
+      Faults reaching a session (a malformed profile, a kernel without the sandbox, an ABI too
+      old) end in error sinks, which are refusals with exit 78, and no session declares an
+      ItemCommission on what the command does to its host. A run that writes no event is an
+      error source on events_out; the probe passes it on as an omission, because it cannot
+      tell a missing event from no run, and the chain ends at warte. CI pins that chain as a
+      known gap: closing it (a run counter or a start record) flips the check, and this
+      decision is updated with it.
+    rationale: >
+      The model states the fail-closed claim and the Kani and Verus proofs carry the evidence
+      (REQ-ZW-008, REQ-ZW-013). spar 0.49.0's propagation pass ignores sinks and paths, so it
+      over-approximates where an error can travel: an absence it reports is real, which is the
+      direction the fail-closed check needs. Its fault-tree pass is structural only and does
+      not read the annexes, so the gate does not use it. Carrier faults, relay hops and a
+      compromised peer wait for the channel (zwinger#10), which does not exist yet.
+    links:
+      - type: satisfies
+        target: REQ-ZW-016
+
+  - id: DD-ZW-014
+    type: design-decision
+    title: "Event timing is bounded with network calculus on the LAN, under stated assumptions"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27: include WCTT now rather than after the channel exists.
+    decision: >
+      spar's WCTT pass bounds the Pi's event stream to warte in the reference mesh. The rates
+      (100 Mbit/s NICs, a 1 Gbit/s FIFO switch), the 2 to 10 us forwarding latency and the
+      queue depths are written in the model as assumptions. CI requires a bound to exist and to
+      stay under 1 ms; the computed bound is 34.144 us over one hop.
+    rationale: >
+      Events are not real-time, so the budget is there to catch a model change that loses the
+      bound or inflates it, not to promise a deadline. Over WireGuard on the internet a network
+      calculus bound would be meaningless, so the analysis covers the LAN only. The bound does
+      not include serialising a frame onto the sender's 100 Mbit/s access link (about 120 us
+      for 1500 bytes); that question is raised with spar, and the bound is not quoted as a
+      delivery guarantee.
+    links:
+      - type: satisfies
+        target: REQ-ZW-016
+
+  - id: VER-ZW-007
+    type: verification
+    title: "spar analysis of the component type and the reference mesh"
+    status: implemented
+    method: analysis
+    description: >
+      architecture/check.sh, CI job "Architecture model (spar)", spar 0.49.0. Checks both roots
+      for zero spar errors and a non-empty diagnostic list, no ItemCommission propagation, the
+      pinned telemetry chain from a session to warte, and a WCTT bound for e_lan at or under
+      1 ms. Three planted models must each fail in CI: an ItemCommission source on access_out,
+      the switch type removed from the LAN bus, and the event-loss source removed.
+    links:
+      - type: verifies
+        target: REQ-ZW-016

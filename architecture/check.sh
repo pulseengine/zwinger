@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Gate for the AADL model (REQ-ZW-016, VER-ZW-007). Runs spar on the component type and on the
+# reference mesh and fails unless:
+#   1. spar reports no errors for either root;
+#   2. fail-closed (DD-ZW-013): no ItemCommission propagates anywhere. spar's propagation pass
+#      ignores sinks and over-approximates, so an absence it reports is an absence;
+#   3. telemetry (DD-ZW-013): a lost event still reaches warte unflagged. This is a known gap
+#      pinned on purpose: closing it flips this check, and the decision must be updated with it;
+#   4. timing (DD-ZW-014): the Pi's event stream has a WCTT bound, at most WCTT_BUDGET_PS.
+#
+# Usage: architecture/check.sh [DIR]   (DIR holds zwinger.aadl and reference_mesh.aadl)
+# Needs spar and jq on PATH.
+set -euo pipefail
+
+dir="${1:-$(dirname "$0")}"
+WCTT_BUDGET_PS=1000000000   # 1 ms: events are not real-time; a lost or 30x bound must fail
+fail=0
+
+analyze() {
+  local out
+  out="$(spar analyze --root "$1" --format json "${@:2}")" || {
+    echo "spar analyze $1 exited non-zero" >&2
+    exit 1
+  }
+  printf '%s' "$out"
+}
+
+node="$(analyze Zwinger::Node.Confined "$dir/zwinger.aadl")"
+mesh="$(analyze Zwinger_Reference_Mesh::Mesh.TwoNodes "$dir/zwinger.aadl" "$dir/reference_mesh.aadl")"
+
+for pair in "node:$node" "mesh:$mesh"; do
+  name="${pair%%:*}"
+  json="${pair#*:}"
+  n="$(jq '.diagnostics | length' <<<"$json")"
+  errs="$(jq '[.diagnostics[] | select(.severity == "error")] | length' <<<"$json")"
+  # Zero diagnostics means spar analysed nothing, not that the model is clean.
+  if [ "$n" -eq 0 ]; then echo "FAIL $name: spar returned no diagnostics at all"; fail=1; fi
+  if [ "$errs" -ne 0 ]; then
+    echo "FAIL $name: $errs spar error(s)"
+    jq -r '.diagnostics[] | select(.severity == "error") | "  " + .message' <<<"$json"
+    fail=1
+  else
+    echo "ok   $name: 0 errors in $n diagnostics"
+  fi
+  commission="$(jq '[.diagnostics[] | select(.message | test("error type .ItemCommission."))] | length' <<<"$json")"
+  if [ "$commission" -ne 0 ]; then
+    echo "FAIL $name: an ItemCommission propagates, so some fault becomes access the profile did not grant"
+    jq -r '.diagnostics[] | select(.message | test("error type .ItemCommission.")) | "  " + .message' <<<"$json"
+    fail=1
+  else
+    echo "ok   $name: no ItemCommission propagates (fail-closed)"
+  fi
+done
+
+# The device node's lost event crosses the NICs to warte: session -> probe -> pi_nic -> mac_nic -> warte.
+lost="$(jq '[.diagnostics[] | select(.message | test("^error propagation chain: [4-9][0-9]* components downstream of .session. for error type .ServiceOmission."))] | length' <<<"$mesh")"
+if [ "$lost" -eq 0 ]; then
+  echo "FAIL mesh: a lost event no longer reaches warte unflagged; if that gap is closed, update DD-ZW-013 and this check"
+  fail=1
+else
+  echo "ok   mesh: known gap pinned: a lost event reaches warte as a silent omission"
+fi
+
+bound="$(jq -r '[.diagnostics[] | select(.analysis == "wctt") | .message | capture("WcttBound: stream .e_lan .*end-to-end WCTT (?<ps>[0-9]+) ps") | .ps] | first // empty' <<<"$mesh")"
+if [ -z "$bound" ]; then
+  echo "FAIL mesh: no WCTT bound for the Pi's event stream (e_lan)"
+  fail=1
+elif [ "$bound" -gt "$WCTT_BUDGET_PS" ]; then
+  echo "FAIL mesh: WCTT of e_lan is $bound ps, over the $WCTT_BUDGET_PS ps budget"
+  fail=1
+else
+  echo "ok   mesh: WCTT of e_lan is $bound ps (budget $WCTT_BUDGET_PS ps)"
+fi
+
+exit "$fail"

@@ -110,6 +110,19 @@ Twelve planted bugs must each be rejected, so a proof that stopped looking fails
 
 Three planted bugs must each fail verification. Kani (CBMC) and Verus (Z3) check the same functions, so a gap in one solver is not shared by the other.
 
+## Architecture model
+
+[`architecture/zwinger.aadl`](architecture/zwinger.aadl) is the AADL component type for one confined node: the session, its kernel, its profiles, the host resources the command touches, and the warte probe, each with an EMV2 error model. Any deployment imports package `Zwinger` and binds nodes to its own hosts. [`architecture/reference_mesh.aadl`](architecture/reference_mesh.aadl) is the public template: an agent node on a Mac and a device node on a Pi, with warte on the agent's host.
+
+`architecture/check.sh` runs [spar](https://github.com/pulseengine/spar) 0.49.0 on both models (CI job "Architecture model (spar)"). It fails when:
+
+- spar reports an error;
+- any fault propagates as access the profile did not grant (`ItemCommission`);
+- the known telemetry gap changes: a run that wrote no event still reaches warte as a silent omission;
+- the Pi's event stream to warte has no worst-case traversal time bound, or one above 1 ms.
+
+Three planted models must each fail the gate. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
+
 ## Releases
 
 Tagged releases publish static Linux binaries (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`), a CycloneDX SBOM and a docs archive. All of them are listed in `SHA256SUMS.txt`, which is signed with cosign keyless; the archives also carry SLSA build provenance. To verify a download and pin it by sha256:
