@@ -461,6 +461,14 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
                 .into(),
         );
     }
+    if !p.network.allow_loopback_ports.is_empty() {
+        return Err(
+            "network.allow_loopback_ports: Landlock filters ports, not addresses, so allowing \
+             a loopback port would allow it on every host; the Linux backend cannot confine this \
+             yet (zwinger#14); remove it, or use mode = \"unfiltered\" and say so"
+                .into(),
+        );
+    }
     let mut skipped = Vec::new();
     let read = grants(p.reads(), &mut skipped)?;
     let write = grants(p.writes(), &mut skipped)?;
@@ -1741,6 +1749,17 @@ mod tests {
     fn local_binding_refuses_on_linux() {
         let t = tree();
         assert!(plan(&profile(&t, "network:\n  allow_local_binding: true\n")).is_err());
+    }
+
+    // rivet: verifies REQ-ZW-044
+    #[test]
+    fn loopback_ports_refuse_on_linux() {
+        let t = tree();
+        let e = plan(&profile(&t, "network:\n  allow_loopback_ports: [3128]\n")).unwrap_err();
+        assert!(
+            e.starts_with("network.allow_loopback_ports: Landlock filters ports"),
+            "{e}"
+        );
     }
 
     #[test]

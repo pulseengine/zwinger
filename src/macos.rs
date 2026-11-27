@@ -359,7 +359,10 @@ pub fn policy_with_session(
 
     s += ";; ---- network ----\n";
     match p.network.mode {
-        NetworkMode::None => s += "(allow system-socket (socket-domain AF_UNIX))\n",
+        NetworkMode::None => {
+            s += "(allow system-socket (socket-domain AF_UNIX))\n";
+            s += &loopback_rules(&p.network.allow_loopback_ports);
+        }
         NetworkMode::Unfiltered => {
             // IP only: a UNIX socket's connect and bind stay governed by unix_sockets below.
             s += &UNFILTERED_IP.join("\n");
@@ -498,11 +501,41 @@ pub fn not_enforced(p: &Profile) -> Vec<&'static str> {
     gaps
 }
 
+/// Rules for `network.allow_loopback_ports`: IPv4 and IPv6 TCP sockets, connecting only to
+/// loopback on the listed ports (Seatbelt's `localhost` matches the loopback addresses).
+pub fn loopback_rules(ports: &[u16]) -> String {
+    if ports.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "(allow system-socket (socket-domain AF_INET) (socket-type SOCK_STREAM))\n\
+         (allow system-socket (socket-domain AF_INET6) (socket-type SOCK_STREAM))\n",
+    );
+    for p in ports {
+        s += &format!(
+            "(allow network-outbound (remote tcp \"localhost:{p}\")) ; allow_loopback_ports\n"
+        );
+    }
+    s
+}
+
 /// The single startup line written to stderr.
 pub fn summary(p: &Profile, plan: &Plan) -> String {
     let network = match p.network.mode {
-        NetworkMode::None => "none",
-        NetworkMode::Unfiltered => "unfiltered",
+        NetworkMode::None => {
+            if p.network.allow_loopback_ports.is_empty() {
+                "none".to_string()
+            } else {
+                let ports: Vec<String> = p
+                    .network
+                    .allow_loopback_ports
+                    .iter()
+                    .map(u16::to_string)
+                    .collect();
+                format!("none except loopback ports {}", ports.join(", "))
+            }
+        }
+        NetworkMode::Unfiltered => "unfiltered".to_string(),
     };
     let unix = match p.network.unix_sockets {
         UnixSockets::Confined => "confined to socket directories",
@@ -962,6 +995,37 @@ mod tests {
     // ---- policy ----
 
     // rivet: verifies REQ-ZW-015
+    // rivet: verifies REQ-ZW-044
+    #[test]
+    fn loopback_ports_allow_only_loopback_on_those_ports() {
+        let t = tree();
+        let none = profile(&t, "");
+        let pol = policy(&none, &plan(&none).unwrap()).unwrap();
+        assert!(!pol.contains("AF_INET"), "{pol}");
+        assert!(!pol.contains("network-outbound (remote tcp"), "{pol}");
+        let p = profile(&t, "network:\n  allow_loopback_ports: [3128, 18480]\n");
+        let pol = policy(&p, &plan(&p).unwrap()).unwrap();
+        for port in [3128, 18480] {
+            assert!(
+                pol.contains(&format!(
+                    "(allow network-outbound (remote tcp \"localhost:{port}\"))"
+                )),
+                "{pol}"
+            );
+        }
+        assert!(
+            pol.contains("(socket-domain AF_INET) (socket-type SOCK_STREAM)"),
+            "{pol}"
+        );
+        assert!(!pol.contains("(remote ip)"), "no other outbound: {pol}");
+        assert!(
+            summary(&p, &plan(&p).unwrap())
+                .contains("network: none except loopback ports 3128, 18480;"),
+            "{}",
+            summary(&p, &plan(&p).unwrap())
+        );
+    }
+
     #[test]
     fn policy_starts_closed_and_includes_the_base() {
         let t = tree();

@@ -286,6 +286,42 @@ fn carve_outs_inside_a_write_tree_are_refused() {
     refused("noexec: [\"@/w/a\"]\n");
 }
 
+// rivet: verifies REQ-ZW-044
+#[test]
+fn loopback_ports_connect_only_on_loopback() {
+    let listed = TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listed.local_addr().unwrap().port();
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other_addr = other.local_addr().unwrap().to_string();
+    let sc = Scene::new(&format!("network:\n  allow_loopback_ports: [{port}]\n"));
+    assert_eq!(
+        probe(&sc, "tcp_connect", &format!("127.0.0.1:{port}")),
+        Some(0)
+    );
+    // IPv6 loopback on the listed port: the listener is IPv4-only, so the connect is refused by
+    // the peer (ECONNREFUSED), not by the sandbox.
+    assert_ne!(
+        probe(&sc, "tcp_connect", &format!("[::1]:{port}")),
+        Some(EPERM)
+    );
+    // An unlisted loopback port.
+    assert_eq!(
+        probe_unconfined("tcp_connect", &other_addr),
+        Some(0),
+        "control"
+    );
+    assert_eq!(probe(&sc, "tcp_connect", &other_addr), Some(EPERM));
+    // The listed port on this host's own non-loopback address: the route the kernel would pick
+    // for an outside address, found without sending anything.
+    let u = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    u.connect("192.0.2.1:9").unwrap();
+    let ip = u.local_addr().unwrap().ip();
+    assert!(!ip.is_loopback(), "{ip}");
+    let lan = format!("{ip}:{port}");
+    assert_eq!(probe_unconfined("tcp_connect", &lan), Some(0), "control");
+    assert_eq!(probe(&sc, "tcp_connect", &lan), Some(EPERM));
+}
+
 // rivet: verifies REQ-ZW-015
 #[test]
 fn tcp_connect_is_refused_under_mode_none() {

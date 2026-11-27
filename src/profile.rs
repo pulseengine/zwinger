@@ -76,6 +76,10 @@ pub struct Network {
     /// Whether the session may bind and listen on loopback ports.
     #[serde(default)]
     pub allow_local_binding: bool,
+    /// Loopback TCP ports the session may connect to while `mode` is `none`, for example a
+    /// network proxy outside the session. macOS only: Landlock filters ports, not addresses.
+    #[serde(default)]
+    pub allow_loopback_ports: Vec<u16>,
     /// `confined` (default): UNIX sockets only where the backend can confine where they connect.
     /// `unfiltered`: `socket(AF_UNIX)` is allowed and its connections are not confined.
     #[serde(default)]
@@ -238,7 +242,25 @@ impl Profile {
                 ));
             }
         }
+        let mut ports = self.network.allow_loopback_ports.clone();
+        ports.sort_unstable();
+        if ports.contains(&0) {
+            return Err("network.allow_loopback_ports: port 0 is not a port; remove it".into());
+        }
+        if let Some(w) = ports.windows(2).find(|w| w[0] == w[1]) {
+            return Err(format!(
+                "network.allow_loopback_ports lists {} twice; remove one",
+                w[0]
+            ));
+        }
         if self.network.mode == NetworkMode::Unfiltered {
+            if !self.network.allow_loopback_ports.is_empty() {
+                return Err(
+                    "network.allow_loopback_ports is implied by mode = \"unfiltered\"; \
+                            remove one of them"
+                        .into(),
+                );
+            }
             if !self.network.allow.is_empty() {
                 return Err(
                     "network.allow lists hosts, but mode = \"unfiltered\" allows every \
@@ -558,6 +580,23 @@ network:
         ));
         assert!(invalid(
             "name: \"x\"\nnetwork:\n  mode: \"unfiltered\"\n  allow_local_binding: true\n"
+        ));
+    }
+
+    // rivet: verifies REQ-ZW-044
+    #[test]
+    fn loopback_ports_are_checked() {
+        assert!(parse("name: \"x\"\nnetwork:\n  allow_loopback_ports: [3128, 18480]\n").is_ok());
+        assert!(invalid(
+            "name: \"x\"\nnetwork:\n  allow_loopback_ports: [0]\n"
+        ));
+        assert!(invalid(
+            "name: \"x\"\nnetwork:\n  allow_loopback_ports: [3128, 3128]\n"
+        ));
+        // Not a u16: a parse error.
+        assert!(parse("name: \"x\"\nnetwork:\n  allow_loopback_ports: [70000]\n").is_err());
+        assert!(invalid(
+            "name: \"x\"\nnetwork:\n  mode: \"unfiltered\"\n  allow_loopback_ports: [3128]\n"
         ));
     }
 
