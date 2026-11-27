@@ -8,7 +8,7 @@
 - a `noexec` tree lies inside a wider grant, whose execute right would still cover it;
 - `network.allow` names hosts or `allow_local_binding` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.
 
-No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works. `ioctl` with `TIOCSTI` or `TIOCLINUX` is refused, so the session cannot push input into the caller's terminal for the unconfined shell to run.
+No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works. `ioctl` with `TIOCSTI` or `TIOCLINUX` is refused, so the session cannot push input into the caller's terminal for the unconfined shell to run. `add_key`, `request_key` and `keyctl` are refused, so the session cannot use the kernel keyrings, which hold secrets no path rule covers.
 
 `network.mode = "unfiltered"` and `unix_sockets = "unfiltered"` turn those off explicitly; the startup line then lists them as not enforced.
 
@@ -20,7 +20,7 @@ zwinger writes one line to stderr (the journal under systemd) before it execs, e
 zwinger: runner19 confined: landlock abi 4; 7 read, 9 write grants (absent, skipped: /lib32, /libx32); network: unfiltered; unix sockets: refused; denial audit log: off (abi 7); not enforced: network (mode = unfiltered), device ioctls (abi 5), signal scoping (abi 6)
 ```
 
-The session gets `ZWINGER_PROFILE` and `ZWINGER_ABI` in its environment. Below Landlock ABI 7 (Linux 6.15) the kernel logs nothing, so a denial is only its errno: `EACCES` from open, creat, mkdir, unlink or truncate on a path; `EXDEV` from a rename or link across directories; `EACCES` from `socket(2)` for a refused family; `EPERM` for io_uring, `TIOCSTI` and `TIOCLINUX`. From ABI 7 on, Landlock writes denials to the audit log. `zwinger explain PROFILE PATH` names the grant that decides a path.
+The session gets `ZWINGER_PROFILE` and `ZWINGER_ABI` in its environment. Below Landlock ABI 7 (Linux 6.15) the kernel logs nothing, so a denial is only its errno: `EACCES` from open, creat, mkdir, unlink or truncate on a path; `EXDEV` from a rename or link across directories; `EACCES` from `socket(2)` for a refused family; `EPERM` for io_uring, the keyring syscalls, `TIOCSTI` and `TIOCLINUX`. From ABI 7 on, Landlock writes denials to the audit log. `zwinger explain PROFILE PATH` names the grant that decides a path.
 
 ## Self-hosted CI runners
 

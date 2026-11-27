@@ -34,9 +34,9 @@ Outside zwinger's code, it trusts:
 
 | File | `unsafe` | `extern "C"` | `allow(unsafe_code)` | Verus `external_body` | Verus `assume_specification` | Verus `assume` | `kani::assume` | `kani::unwind` |
 |---|---|---|---|---|---|---|---|---|
-| `src/linux.rs` | 3 | 0 | 1 | 0 | 0 | 0 | 5 | 20 |
+| `src/linux.rs` | 3 | 0 | 1 | 0 | 0 | 0 | 5 | 21 |
 | `src/macos.rs` | 6 | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| **total** | 9 | 1 | 2 | 0 | 0 | 0 | 5 | 20 |
+| **total** | 9 | 1 | 2 | 0 | 0 | 0 | 5 | 21 |
 
 44 crates are compiled into zwinger or run while it is compiled (`cargo tree -e normal --target all`):
 
