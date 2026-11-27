@@ -908,65 +908,91 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         ));
     }
 
-    // SAFETY: plain syscalls on integer arguments and a pointer to a live, correctly laid out
-    // sock_fprog.
-    unsafe {
-        if libc::syscall(
-            libc::SYS_close_range,
-            3u32,
-            u32::MAX,
-            libc::CLOSE_RANGE_CLOEXEC,
-        ) != 0
-        {
-            return Err(format!(
-                "close_range: {}; refusing to leak inherited descriptors",
-                std::io::Error::last_os_error()
-            ));
-        }
-        let mut filter: Vec<libc::sock_filter> =
-            seccomp_program(arch, enf.unix_sockets, enf.inet_sockets)
-                .as_slice()
-                .iter()
-                .map(|i| libc::sock_filter {
-                    code: i.code,
-                    jt: i.jt,
-                    jf: i.jf,
-                    k: i.k,
-                })
-                .collect();
-        let prog = libc::sock_fprog {
-            len: u16::try_from(filter.len()).expect("short program"),
-            filter: filter.as_mut_ptr(),
-        };
-        if libc::syscall(
-            libc::SYS_seccomp,
-            libc::SECCOMP_SET_MODE_FILTER,
-            0u32,
-            &prog as *const libc::sock_fprog,
-        ) != 0
-        {
-            return Err(format!(
-                "seccomp: {}; refusing",
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
+    sys::close_range_cloexec()
+        .map_err(|e| format!("close_range: {e}; refusing to leak inherited descriptors"))?;
+    let mut filter: Vec<libc::sock_filter> =
+        seccomp_program(arch, enf.unix_sockets, enf.inet_sockets)
+            .as_slice()
+            .iter()
+            .map(|i| libc::sock_filter {
+                code: i.code,
+                jt: i.jt,
+                jf: i.jf,
+                k: i.k,
+            })
+            .collect();
+    sys::set_seccomp_filter(&mut filter).map_err(|e| format!("seccomp: {e}; refusing"))?;
     Ok((enf, plan))
 }
 
 /// The kernel's Landlock ABI version, or 0 when Landlock is unavailable.
 #[cfg(target_os = "linux")]
 fn kernel_abi() -> i32 {
-    // SAFETY: LANDLOCK_CREATE_RULESET_VERSION with a null attr and size 0 only queries.
-    let v = unsafe {
-        libc::syscall(
-            libc::SYS_landlock_create_ruleset,
-            std::ptr::null::<u8>(),
-            0usize,
-            1u32,
-        )
-    };
-    i32::try_from(v).unwrap_or(0).max(0)
+    i32::try_from(sys::landlock_abi()).unwrap_or(0).max(0)
+}
+
+/// The only unsafe code in the Linux backend (docs/trusted-base.md): three raw syscalls the
+/// landlock crate does not wrap. Everything they are given is computed and checked by the
+/// safe code above.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod sys {
+    /// Mark every inherited descriptor from 3 up close-on-exec.
+    pub(super) fn close_range_cloexec() -> std::io::Result<()> {
+        // SAFETY: a plain syscall on integer arguments.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Install `filter` as the seccomp filter. no_new_privs is already set by Landlock's
+    /// restrict_self, which runs first.
+    pub(super) fn set_seccomp_filter(filter: &mut [libc::sock_filter]) -> std::io::Result<()> {
+        let len = u16::try_from(filter.len())
+            .map_err(|_| std::io::Error::other("seccomp program longer than u16::MAX"))?;
+        let prog = libc::sock_fprog {
+            len,
+            filter: filter.as_mut_ptr(),
+        };
+        // SAFETY: `prog` points at `filter`, which is live and correctly laid out for the whole
+        // call; the kernel copies the program before returning.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_seccomp,
+                libc::SECCOMP_SET_MODE_FILTER,
+                0u32,
+                &prog as *const libc::sock_fprog,
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// LANDLOCK_CREATE_RULESET_VERSION: the ABI version, or a negative value without Landlock.
+    pub(super) fn landlock_abi() -> libc::c_long {
+        // SAFETY: a null attr with size 0 and the version flag only query the kernel.
+        unsafe {
+            libc::syscall(
+                libc::SYS_landlock_create_ruleset,
+                std::ptr::null::<u8>(),
+                0usize,
+                1u32,
+            )
+        }
+    }
 }
 
 #[cfg(test)]

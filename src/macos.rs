@@ -490,8 +490,10 @@ pub fn confine(p: &Profile) -> Result<Plan, String> {
     Ok(plan)
 }
 
-/// The macOS-only half: the calls into libSystem.
+/// The macOS-only half: the calls into libSystem, and the only unsafe code in the macOS backend
+/// (docs/trusted-base.md).
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
 mod enforce {
     use std::ffi::{CStr, CString, c_char};
 
