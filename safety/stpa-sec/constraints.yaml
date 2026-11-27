@@ -1,0 +1,275 @@
+# STPA-Sec for zwinger, step 1c: security constraints (2026-11-27).
+#
+# Each constraint names its enforcement. Enforced constraints are satisfied by a requirement
+# (artifacts/requirements.yaml links them with constraint-satisfies) that a verification proves.
+# Unenforced ones name the issue that will enforce them, with a negative-control acceptance
+# criterion there; two are tracked privately with the owner until they are fixed.
+
+artifacts:
+  - id: SC-ZW-1
+    type: sec-constraint
+    title: zwinger execs nothing unless every rule of the profile is enforced
+    status: approved
+    description: >
+      Before exec, zwinger refuses (exit 78) any profile the kernel and backend cannot enforce as
+      written, and a refused session never execs. Enforced by the linked requirements (CLI tests, Kani over enforcement()); lifecycle
+      conformance of real runs: zwinger#22, in review.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-3
+
+  - id: SC-ZW-2
+    type: sec-constraint
+    title: Reads succeed only inside the grants, and carve-outs hold through symlinks
+    status: approved
+    description: >
+      A read outside read and write grants fails; a path beneath a deny_read stays unreadable
+      unless stated as an exception, including through symlinks resolved at plan time. Enforced by the linked
+      requirements (end-to-end tests, Kani and Verus over the carve-out checker).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-1
+
+  - id: SC-ZW-3
+    type: sec-constraint
+    title: Data writes and execve succeed only where the profile grants them
+    status: approved
+    description: >
+      Creating, deleting or changing the content of a file outside write grants fails, and execve
+      of a file in a noexec tree fails. Not covered: metadata changes (the metadata constraint), and code loaded
+      without execve (an interpreter reading a script, the dynamic loader mapping a library),
+      which Landlock's Execute right does not gate on Linux. Enforced by the linked
+      requirements (end-to-end tests, Kani and Verus over the noexec checker).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-2
+
+  - id: SC-ZW-4
+    type: sec-constraint
+    title: No descriptor opened before confinement reaches the session, except stdio
+    status: approved
+    description: >
+      Inherited descriptors from 3 up are close-on-exec before exec, so a descriptor to a file
+      outside the grants cannot be used to bypass Landlock. Enforced by the linked requirement
+      (inherited_descriptors_do_not_leak_into_the_session on Linux and macOS).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-1
+      - type: prevents-sec-hazard
+        target: SH-ZW-2
+
+  - id: SC-ZW-5
+    type: sec-constraint
+    title: Sockets follow the profile's network mode, and unenforceable allowances are refused
+    status: approved
+    description: >
+      Under mode none only UNIX sockets the backend can confine are allowed; io_uring is refused;
+      a host allow list or local binding is refused until it can be enforced; unfiltered modes
+      must be stated and are named at startup. Enforced by the linked requirements (Kani
+      over the filter on three architectures, end-to-end tests). Host filtering: zwinger#14.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-4
+
+  - id: SC-ZW-6
+    type: sec-constraint
+    title: The session cannot write, forge or remove its own record
+    status: approved
+    description: >
+      The record is opened before confinement and written through that descriptor; no record is
+      written into a directory a write grant covers; one record per run. Enforced by the linked requirement
+      (events unit tests, no_event_where_a_write_grant_covers_the_dir, end-to-end event tests).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-5
+
+  - id: SC-ZW-7
+    type: sec-constraint
+    title: A run that leaves no record is detectable
+    status: approved
+    description: >
+      warte can tell a run that left no record from no run. Unenforced: zwinger#27 (the
+      architecture gate pins the gap).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-5
+
+  - id: SC-ZW-8
+    type: sec-constraint
+    title: The session cannot push terminal input or signal processes outside it
+    status: approved
+    description: >
+      TIOCSTI and TIOCLINUX are refused on the inherited terminal; signals and device ioctls are
+      scoped to the session where the kernel can. Enforced for the terminal by the linked requirements (Kani
+      planted-bug controls over the BPF model; an end-to-end test on a real terminal is
+      zwinger#35). Signal scoping below Landlock ABI 6 and device-ioctl
+      scoping below ABI 5 are named as not enforced on the startup line; refusing on request: zwinger#28.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-6
+
+  - id: SC-ZW-9
+    type: sec-constraint
+    title: What later unconfined runs trust is outside the session's write grants
+    status: approved
+    description: >
+      Files that a later run of zwinger, or a tool the operator runs outside zwinger, will load or
+      execute cannot be changed by the session. The profile file, the zwinger executable and its
+      invocation path are refused inside write grants once zwinger#32 merges; the rest is tracked
+      with the owner.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-6
+      - type: prevents-sec-hazard
+        target: SH-ZW-7
+
+  - id: SC-ZW-10
+    type: sec-constraint
+    title: A generated network section equals what the reviewed model produces
+    status: approved
+    description: >
+      The network section in a deployed profile is spar's output for the reviewed architecture
+      model, and CI fails on any difference. Partly enforced by the linked requirements: the architecture gate checks the
+      model and tests/architecture.rs ties the expected fragments to it; the diff against spar's
+      emitter waits for spar 0.50 (seam zwinger#17).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-7
+
+  - id: SC-ZW-11
+    type: sec-constraint
+    title: Native tools run only as allowlisted, with their children and environment bounded
+    status: approved
+    description: >
+      native-exec spawns only allowlisted programs by canonical path and inode, with an
+      environment allowlist and a per-tool profile for children; zwinger grants Execute only on
+      exec files and exec trees and removes code-injecting variables. Partly enforced
+      by the linked requirements (the plan in ZWINGER_GRANTS) and the environment scrub
+      (zwinger#25, in review); the
+      host side is kiln's and kapsel's (kapsel#140); zwinger's exec lists: zwinger#31.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-8
+
+  - id: SC-ZW-12
+    type: sec-constraint
+    title: The serve channel carries only authenticated requests within the requester's grants
+    status: approved
+    description: >
+      Both ends of a serve channel authenticate each other, and a request is carried out with at
+      most the authority the requesting session holds. Unenforced: the channel is design only
+      (zwinger#10); this constraint is an acceptance criterion of that design.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-9
+
+  - id: SC-ZW-13
+    type: sec-constraint
+    title: zwinger's pre-exec code accepts only well-formed input and stays small
+    status: approved
+    description: >
+      The profile is parsed strictly (unknown keys, duplicates, tags and YAML 1.1 booleans
+      refused), unsafe code is confined to two modules, and the trusted base is computed and
+      gated. Enforced by the linked requirements. Fuzzing the parser and planner: zwinger#29.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-10
+
+  - id: SC-ZW-14
+    type: sec-constraint
+    title: A session's use of host resources is bounded
+    status: approved
+    description: >
+      Processes, memory, open files and file size of a session are limited as the profile says.
+      Unenforced: zwinger#30.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-11
+
+  - id: SC-ZW-15
+    type: sec-constraint
+    title: The shell under zwinger opens no directory zwinger did not grant
+    status: approved
+    description: >
+      kapsel derives its preopens only from ZWINGER_GRANTS and refuses to start without it
+      (exit 78), never falling back to the current directory. zwinger's side is enforced by
+      the linked requirement; kapsel's side is kapsel's (kapsel#140). Even if the shell is wrong, the kernel
+      domain bounds it (the read and write constraints).
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-1
+      - type: prevents-sec-hazard
+        target: SH-ZW-2
+
+  - id: SC-ZW-16
+    type: sec-constraint
+    title: Only the secrets the profile allows reach the session
+    status: approved
+    description: >
+      Environment variables reach the session only as the profile allows, and kernel keyrings and
+      other processes' command lines and environment are not readable from it. Unenforced: the
+      environment allowlist is zwinger#33; the rest is tracked with the owner.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-12
+
+  - id: SC-ZW-17
+    type: sec-constraint
+    title: No unconfined server is reachable from the session unless the profile names it
+    status: approved
+    description: >
+      Sockets of servers outside the session, Mach services and similar endpoints are reachable
+      only when the profile names them, and the startup line lists them. mach_lookup entries are
+      grants and need the same review as paths. Unenforced; tracked with the owner.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-13
+
+  - id: SC-ZW-18
+    type: sec-constraint
+    title: The objects the kernel enforces on are the objects zwinger checked
+    status: approved
+    description: >
+      Each granted path is resolved and opened once, and the checks and the kernel rule use that
+      same open object. The Kani and Verus proofs cover path strings, not filesystem objects.
+      Unenforced; tracked with the owner.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-14
+
+  - id: SC-ZW-19
+    type: sec-constraint
+    title: A refusal names the path and rule that caused it
+    status: approved
+    description: >
+      When a run is refused because of state the session or repository controls (a missing
+      grant, a symlink into a denied tree), the refusal names the path and the rule, so the
+      operator can repair the state rather than widen grants or drop confinement. Enforced by the
+      linked requirement (refusal and explain messages). The induced refusal itself is accepted:
+      refusing is the fail-closed answer.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-15
+
+  - id: SC-ZW-20
+    type: sec-constraint
+    title: A record can be attributed to the run that wrote it
+    status: approved
+    description: >
+      warte can tell a record zwinger wrote for a run from one written by another session or by
+      a later process of the same user. Unenforced: zwinger#34.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-5
+
+  - id: SC-ZW-21
+    type: sec-constraint
+    title: Metadata outside the grants is protected where the backend can do it
+    status: approved
+    description: >
+      On macOS, Seatbelt's default deny covers metadata writes outside write trees. On Linux,
+      Landlock does not restrict chmod, chown, utime or extended attributes outside granted
+      trees; this is an accepted residual, stated in docs/linux.md, until Landlock covers it.
+    links:
+      - type: prevents-sec-hazard
+        target: SH-ZW-16

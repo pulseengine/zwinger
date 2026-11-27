@@ -1,0 +1,668 @@
+# STPA-Sec for zwinger, step 4: security loss scenarios (2026-11-27).
+# Each scenario gives the causal chain behind a sec-uca and names the factors a fix must hit.
+
+artifacts:
+  - id: SSC-ZW-1
+    type: sec-scenario
+    title: A CI image with an old kernel would run jobs half-confined
+    status: approved
+    description: >
+      A runner image is rebuilt on a kernel with Landlock ABI 2, which cannot restrict truncate.
+      If zwinger confined what it could and continued, a job could truncate files outside its
+      grants. zwinger refuses below ABI 3; lifecycle conformance of real runs (zwinger#22, in review)
+      will hold the binary to "refused means not exec'd".
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-1
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [kernel ABI below the profile's needs, fail-open handling of partial enforcement]
+
+  - id: SSC-ZW-2
+    type: sec-scenario
+    title: A planted symlink turns a granted path into a secret
+    status: approved
+    description: >
+      Repository content replaces a granted subdirectory with a symlink to ~/.ssh. If the plan
+      used the stated path, Landlock would grant the key directory. zwinger resolves every path
+      and refuses grants resolving into denied trees; Kani and Verus prove the carve-out checker
+      for stated and resolved paths varying independently.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-2
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [granted path resolved after review, carve-out Landlock cannot subtract]
+
+  - id: SSC-ZW-3
+    type: sec-scenario
+    title: A descriptor leaked by the CI runner reaches the job
+    status: approved
+    description: >
+      The runner keeps a log file or a socket open when it starts the job. Without close-on-exec,
+      the job writes through descriptor N to a file outside its grants. zwinger marks descriptors
+      from 3 up close-on-exec before exec; end-to-end tests check it on Linux and macOS.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-3
+      - type: leads-to-sec-hazard
+        target: SH-ZW-2
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [descriptors inherited across exec, Landlock checks only at open]
+
+  - id: SSC-ZW-4
+    type: sec-scenario
+    title: A profile changed after approval widens the next run
+    status: approved
+    description: >
+      Between the operator's approval and a later run, the profile file is changed and the next
+      run loads the changed grants. The record's profile sha256 shows the change afterwards; the
+      prevention is the trusted-input constraint, tracked with the owner.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-4
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [profile read from disk at each run, no binding between approval and file]
+
+  - id: SSC-ZW-5
+    type: sec-scenario
+    title: A record written before the seccomp install claims confinement
+    status: approved
+    description: >
+      If the record were finished before the filter was installed and the install then failed,
+      warte would hold "confined" for a run that refused or ran less confined. zwinger finishes
+      the record only after confine() returns; the lifecycle test (zwinger#22, in review) will map
+      a confined record with exit 78 to a transition the model forbids.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-5
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [record written before enforcement result known]
+
+  - id: SSC-ZW-6
+    type: sec-scenario
+    title: Crafted YAML aims at an ambiguity in the pre-exec parser
+    status: approved
+    description: >
+      A profile in a repository uses duplicate keys, a `yes` that a YAML 1.1 parser reads as true,
+      or a tag, hoping the planner sees a grant the reviewer did not. rivet-yaml refuses duplicates
+      and tags and reads YAML 1.2; unknown keys are refused. Unexplored inputs remain: fuzzing,
+      zwinger#29.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-6
+      - type: leads-to-sec-hazard
+        target: SH-ZW-10
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [untrusted profile text, parser runs with full authority]
+
+  - id: SSC-ZW-7
+    type: sec-scenario
+    title: An x32 syscall number or io_uring bypasses the socket filter
+    status: approved
+    description: >
+      On x86_64, a socket call with the x32 bit set, or a socket opened through io_uring, would
+      escape a filter that only matched the native number. The filter answers x32 syscall
+      numbers with EPERM, kills a foreign audit arch, and refuses io_uring; Kani proves the filter equals its specification for every syscall number
+      and argument on three architectures.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-7
+      - type: leads-to-sec-hazard
+        target: SH-ZW-4
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [second syscall ABI on one audit arch, asynchronous syscall interfaces]
+
+  - id: SSC-ZW-8
+    type: sec-scenario
+    title: TIOCSTI types a command into the operator's shell
+    status: approved
+    description: >
+      The session inherits the operator's terminal on fds 0-2. With TIOCSTI it queues "curl ...|sh"
+      into the input the parent shell reads after the session exits. The filter refuses TIOCSTI and
+      TIOCLINUX (Kani planted-bug controls). Signals to the operator's processes below ABI 6 stay
+      possible and are named as not enforced; zwinger#28.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-8
+      - type: leads-to-sec-hazard
+        target: SH-ZW-6
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [terminal opened before confinement, kernel scoping missing below ABI 6]
+
+  - id: SSC-ZW-9
+    type: sec-scenario
+    title: Content planted inside a write grant runs later outside zwinger
+    status: approved
+    description: >
+      The agent leaves content inside its write grants that a later
+      unconfined process loads or executes. zwinger confined the session correctly; the authority
+      is gained afterwards. Prevention is the trusted-input constraint, tracked with the owner.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-9
+      - type: leads-to-sec-hazard
+        target: SH-ZW-6
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [write grants that contain files unconfined tools trust]
+
+  - id: SSC-ZW-10
+    type: sec-scenario
+    title: The agent writes a "confined" record for an unconfined run
+    status: approved
+    description: >
+      With the events directory inside a write grant, the agent drops a record claiming a clean
+      confined run, or deletes its own. zwinger writes no record there and says so on stderr; a
+      unit test and end-to-end tests check it. Records of other runs stay writable by any session
+      whose own profile grants the directory, and by later processes of the same user; zwinger#34
+      authenticates them.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-10
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-feedback-injection
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [record store writable by the reported-on session]
+
+  - id: SSC-ZW-11
+    type: sec-scenario
+    title: Injected instructions post secrets over an unfiltered network
+    status: approved
+    description: >
+      A fetched page tells the agent to read a token it can see and post it to an attacker's
+      host. Under mode none the socket is refused; under unfiltered it succeeds, which the profile
+      must state and the startup line names. Host filtering through a namespace and proxy:
+      zwinger#14.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-11
+      - type: leads-to-sec-hazard
+        target: SH-ZW-4
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: network
+      attacker-type: external-network
+      causal-factors: [readable secret, network unfiltered by choice]
+
+  - id: SSC-ZW-12
+    type: sec-scenario
+    title: A fork bomb in a CI job takes down the runner
+    status: approved
+    description: >
+      A malicious test in a pull request forks without bound. Confinement holds, but the host's
+      process table fills and other jobs fail. Resource limits: zwinger#30.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-12
+      - type: leads-to-sec-hazard
+        target: SH-ZW-11
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [no process or memory limits on the session]
+
+  - id: SSC-ZW-13
+    type: sec-scenario
+    title: The agent sets ZWINGER_GRANTS before calling kapsel
+    status: approved
+    description: >
+      The agent exports its own ZWINGER_GRANTS listing ~/.ssh, then runs kapsel, which preopens
+      it. The kernel domain still denies the read, so kapsel's layer is wrong but the boundary
+      holds. kapsel's side (refusing a value it cannot trust) is kapsel's; zwinger passes the real
+      plan in ZWINGER_GRANTS.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-13
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+    fields:
+      scenario-type: adversarial-feedback-injection
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [environment writable by earlier commands in the session]
+
+  - id: SSC-ZW-14
+    type: sec-scenario
+    title: An unsupported construct falls through to bash
+    status: approved
+    description: >
+      If kapsel passed eval or process substitution to a native shell, the command would run with
+      the shell's reach instead of preopened components. kapsel refuses outside its subset
+      (kapsel#140); zwinger's domain still bounds the shell.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-14
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [fallback path to a general-purpose shell]
+
+  - id: SSC-ZW-15
+    type: sec-scenario
+    title: An allowlisted binary is swapped between check and exec
+    status: approved
+    description: >
+      The agent renames its own binary over an allowlisted path in a writable tree between the
+      host's check and the spawn. kiln checks the canonical path and device/inode at spawn
+      (SR-130); zwinger will grant Execute only on listed files (zwinger#31).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-15
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [allowlisted path writable, time between check and exec]
+
+  - id: SSC-ZW-16
+    type: sec-scenario
+    title: A build script runs agent code through an allowlisted cargo
+    status: approved
+    description: >
+      The agent writes build.rs and asks for cargo build; cargo runs it in target/. With exec trees
+      limited to target/ and the toolchain, the code runs there but nowhere else (zwinger#31), and the
+      environment scrub (zwinger#25, in review) will remove RUSTC_WRAPPER and LD_PRELOAD. The kernel cannot tell cargo's
+      children from a hook's; per-tool Landlock on Linux (D) will.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-16
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [tools that run project code by design, kernel exec rights per path only]
+
+  - id: SSC-ZW-17
+    type: sec-scenario
+    title: Runs disappear from warte's account
+    status: approved
+    description: >
+      Profiles that grant write over the events directory make every run skip its record. The
+      probe sees nothing and warte's account shows no activity. zwinger#27 makes the missing
+      record detectable.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-17
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-feedback-injection
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [no record of expected runs to reconcile against]
+
+  - id: SSC-ZW-18
+    type: sec-scenario
+    title: A model change adds an exfiltration host to the generated profile
+    status: approved
+    description: >
+      A pull request edits a Zwinger_Profile::Host in the reference mesh; the next generated
+      network section allows that host. Review catches it today, and tests/architecture.rs ties
+      the committed expected fragments to the model; the CI diff of spar's generated fragments
+      against them waits for spar 0.50 (zwinger#17).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-18
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [generated policy from a reviewable but editable model]
+
+  - id: SSC-ZW-19
+    type: sec-scenario
+    title: A peer impersonates a node on the serve channel
+    status: approved
+    description: >
+      Once a serve channel exists, a host on the network claims to be the agent node and asks the
+      device node to act. The serve-channel constraint makes mutual authentication and a grant subset acceptance
+      criteria of zwinger#10.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-19
+      - type: leads-to-sec-hazard
+        target: SH-ZW-9
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: network
+      attacker-type: external-network
+      causal-factors: [remote requests, identity of peers]
+
+  - id: SSC-ZW-20
+    type: sec-scenario
+    title: Denials steer the operator into granting the home directory
+    status: approved
+    description: >
+      The agent's builds fail with permission denied until the operator adds ~ to write, which also
+      grants credentials and shell startup files. `zwinger explain` names the deciding rule and the
+      startup line names what is not enforced; a check warning for broad grants is part of the
+      trusted-input work.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-20
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+    fields:
+      scenario-type: insider-threat
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [broad grants as the quick fix, denials without guidance]
+
+  # ── additions from the soundness review (2026-11-27) ────────────────────
+
+  - id: SSC-ZW-21
+    type: sec-scenario
+    title: A path component is swapped between resolve and open
+    status: approved
+    description: >
+      zwinger resolves a granted directory and carve-checks it; a still-running earlier session
+      then swaps a component of that path, and the later open for the Landlock rule lands on a
+      different directory. Causal factor: the path is resolved twice. Tracked with the owner
+      (the objects-checked constraint).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-2
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-25
+      - type: leads-to-sec-hazard
+        target: SH-ZW-14
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [path resolved at plan and again at install, concurrent writer on the path]
+
+  - id: SSC-ZW-22
+    type: sec-scenario
+    title: A descriptor zwinger itself opens after close_range reaches the session
+    status: approved
+    description: >
+      Any file zwinger opens after marking descriptors close-on-exec, without O_CLOEXEC, would be
+      inherited by the command. The record descriptor is dropped before exec; Rust's standard
+      library opens files with O_CLOEXEC. Causal factor: descriptors created between close_range
+      and exec.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-3
+      - type: leads-to-sec-hazard
+        target: SH-ZW-2
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [descriptors opened after close_range, missing O_CLOEXEC]
+
+  - id: SSC-ZW-23
+    type: sec-scenario
+    title: A full disk in the events directory loses records
+    status: approved
+    description: >
+      The session fills the filesystem holding the events directory through a write grant on the
+      same filesystem; the next runs cannot create their records and say so on stderr only, so
+      warte sees no runs. zwinger#27 (detection) and zwinger#30 (limits) address it.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-17
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [shared filesystem, record failure reported only on stderr]
+
+  - id: SSC-ZW-24
+    type: sec-scenario
+    title: A session with write over the events directory forges other runs' records
+    status: approved
+    description: >
+      One profile on the host grants write over the operator's home; its session writes records
+      for runs that never happened and deletes records of runs that did. The probe forwards them.
+      zwinger#34.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-21
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-feedback-injection
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [unauthenticated records, a broad grant in some profile]
+
+  - id: SSC-ZW-25
+    type: sec-scenario
+    title: The probe reads an empty record file
+    status: approved
+    description: >
+      zwinger creates the record before confinement and writes it after; a probe that reacts to
+      creation reads an empty file and drops it. Causal factor: no completion signal. The probe
+      must wait for a complete document or a close-write event (warte#223).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-22
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-feedback-injection
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [record created before it is written, probe triggered on create]
+
+  - id: SSC-ZW-26
+    type: sec-scenario
+    title: The session kills the probe on a kernel without signal scoping
+    status: approved
+    description: >
+      On the CI host (Landlock ABI 4) the session sends SIGKILL to the probe, which runs as the
+      same user; later runs go unreported until the probe restarts. zwinger#28 lets a profile
+      require signal scoping; a probe under another user avoids it.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-23
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [probe under the same user, no signal scoping below ABI 6]
+
+  - id: SSC-ZW-27
+    type: sec-scenario
+    title: A reachable server carries out the session's requests
+    status: approved
+    description: >
+      A per-user server's socket lies inside a write grant. The session connects and asks the
+      server to act; the server does, with its own authority, outside the session's domain.
+      Tracked with the owner (the reachable-server constraint).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-24
+      - type: leads-to-sec-hazard
+        target: SH-ZW-13
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [server endpoints inside granted trees, servers acting on any local client]
+
+  - id: SSC-ZW-28
+    type: sec-scenario
+    title: A planted program shadows the agent on PATH
+    status: approved
+    description: >
+      A runner's writable tool directory is on PATH before the system one; an earlier job leaves a
+      program with the agent's name there, and the next run execs it under zwinger. It is
+      confined, but the operator's account of what ran is wrong. Fix direction: resolve the
+      command before exec and refuse a path inside a write grant, as zwinger#32 does for zwinger.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-26
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [command resolved through PATH, writable PATH entry]
+
+  - id: SSC-ZW-29
+    type: sec-scenario
+    title: The agent deletes a granted directory so the next run refuses
+    status: approved
+    description: >
+      The session removes a write-granted cache directory; the next zwinger run refuses because a
+      granted path is missing. The refusal names the path, so the operator recreates it instead of
+      widening grants (the refusal constraint).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-27
+      - type: leads-to-sec-hazard
+        target: SH-ZW-15
+    fields:
+      scenario-type: adversarial-process-interaction
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [granted paths inside trees the session can change, refusal as the only outcome]
+
+  - id: SSC-ZW-30
+    type: sec-scenario
+    title: Friction pushes the operator to run the agent unconfined
+    status: approved
+    description: >
+      Builds fail under confinement until the operator runs the agent directly "for now". Every
+      protection is gone for that session. explain, the startup line and the profile docs reduce
+      the friction; nothing in zwinger can prevent this.
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-28
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      scenario-type: insider-threat
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [confinement friction, no record of runs outside zwinger]
+
+  - id: SSC-ZW-31
+    type: sec-scenario
+    title: A broken generation keeps an old, wider network section
+    status: approved
+    description: >
+      A model change makes spar's emitter fail; the deployment keeps the previously generated
+      section, which still allows a host the reviewed model removed. CI must fail when generation
+      fails, not skip it (zwinger#17).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-29
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: supply-chain
+      causal-factors: [generation failure treated as no change, stale artifacts]
+
+  - id: SSC-ZW-32
+    type: sec-scenario
+    title: A macOS update stops a Seatbelt rule from applying
+    status: approved
+    description: >
+      After an OS update a rule zwinger writes is parsed but no longer enforced as before; the
+      prototype keeps confining with that rule silently gone. The macOS end-to-end tests run on
+      the CI runner's macOS only. Running them on each new macOS release, and refusing versions not
+      tested, is part of the Endpoint Security work (the macOS backend requirement).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-30
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [policy language that is not API, tests on one OS version]
+
+  - id: SSC-ZW-33
+    type: sec-scenario
+    title: Injected instructions print and send the session's environment
+    status: approved
+    description: >
+      A fetched page tells the agent to run env and post the output; the operator's tokens are
+      in it because zwinger passes the environment through. zwinger#33 (environment allowlist).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-31
+      - type: leads-to-sec-hazard
+        target: SH-ZW-12
+    fields:
+      scenario-type: adversarial-control-algorithm
+      attack-vector: network
+      attacker-type: external-network
+      causal-factors: [inherited environment, an allowed outbound channel]
+
+  - id: SSC-ZW-34
+    type: sec-scenario
+    title: Ordinary chmod outside the grants locks the operator out
+    status: approved
+    description: >
+      On Linux the session runs chmod 000 on the operator's files outside its grants, or makes a
+      secret world-readable. Landlock does not restrict metadata changes there; on macOS Seatbelt
+      refuses them. Accepted residual on Linux (the metadata constraint).
+    links:
+      - type: caused-by-sec-uca
+        target: SUCA-ZW-32
+      - type: leads-to-sec-hazard
+        target: SH-ZW-16
+    fields:
+      scenario-type: adversarial-control-path
+      attack-vector: local
+      attacker-type: insider
+      causal-factors: [Landlock rights cover content, not metadata]

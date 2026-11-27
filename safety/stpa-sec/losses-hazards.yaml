@@ -1,0 +1,346 @@
+# STPA-Sec for zwinger, steps 1a and 1b (2026-11-27).
+#
+# Adversary model:
+#   - the confined agent and every process it starts (attacker-type insider: it already runs
+#     code on the host, inside the domain), misaligned or steered by prompt injection;
+#   - anyone who writes the agent's inputs: prompts, repository content, fetched pages and tool
+#     output, the profile file, and the events directory when reachable;
+#   - a peer on the network for the planned serve channel (external-network).
+# The operator, the kernel, and zwinger's code before exec are trusted (docs/trusted-base.md).
+#
+# attacker-type, by input channel (used the same way in every UCA and scenario):
+#   insider          the confined agent and its processes, acting directly
+#   supply-chain     repository content, the profile file and the architecture model, written by
+#                    someone other than the operator, including the agent in an earlier session
+#   external-network fetched pages and tool output that inject instructions (the agent executes)
+# Design flaws that no adversary introduces are tagged insider: the confined agent is the one
+# who exploits them.
+# Kernel attack surface (syscalls the filter allows, such as bpf, userfaultfd, perf_event_open)
+# is an accepted residual under the trusted-kernel assumption, not a hazard of this analysis.
+
+artifacts:
+  - id: SL-ZW-1
+    type: sec-loss
+    title: Data outside the profile is disclosed
+    status: approved
+    description: >
+      Secrets, credentials, other projects or personal files the profile does not grant are read
+      by the session or leave the host through it.
+    fields:
+      cia-impact: [confidentiality]
+      stakeholders: [operator, owners of other projects on the host]
+
+  - id: SL-ZW-2
+    type: sec-loss
+    title: The host is changed outside the profile
+    status: approved
+    description: >
+      Files, tools, configuration or processes outside the session's write grants are altered,
+      including changes that make code run later with authority the session did not have.
+    fields:
+      cia-impact: [integrity]
+      stakeholders: [operator, CI fleet owner]
+
+  - id: SL-ZW-3
+    type: sec-loss
+    title: The account of a run is false
+    status: approved
+    description: >
+      The operator or warte believes a session was confined, refused, or did something, when it
+      was not or did not, so decisions rest on a false record.
+    fields:
+      cia-impact: [integrity]
+      stakeholders: [operator, warte, auditors]
+
+  - id: SL-ZW-4
+    type: sec-loss
+    title: Legitimate work or the host becomes unavailable
+    status: approved
+    description: >
+      Sessions that should run are blocked, a session disrupts the host or the fleet (other
+      processes killed, disk or process table exhausted), or confinement is withdrawn because it
+      blocks legitimate work.
+    fields:
+      cia-impact: [availability]
+      stakeholders: [operator, CI fleet owner]
+
+  - id: SL-ZW-5
+    type: sec-loss
+    title: Other hosts or devices are reached through the session
+    status: approved
+    description: >
+      The session acts on network peers, mesh nodes or devices beyond what the profile and the
+      architecture model declare, or abuses peers it may reach (attacks, spam, mining under an
+      unfiltered network).
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      stakeholders: [operator, device owners, warte]
+
+  - id: SH-ZW-1
+    type: sec-hazard
+    title: A session can read beyond its grants
+    status: approved
+    description: >
+      Some process of the session can read a path, or data from a socket or descriptor, that the
+      profile does not grant, or that lies under a deny_read without a stated exception.
+    fields:
+      cia-impact: [confidentiality]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+
+  - id: SH-ZW-2
+    type: sec-hazard
+    title: A session can write data or execve beyond its grants
+    status: approved
+    description: >
+      Some process of the session can create, change the content of, delete, or execve something
+      the profile does not grant, including execve from a noexec tree. Metadata changes are
+      the metadata hazard.
+    fields:
+      cia-impact: [integrity]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+
+  - id: SH-ZW-3
+    type: sec-hazard
+    title: A command runs less confined than the profile states
+    status: approved
+    description: >
+      The command runs while some rule of the profile is not enforced by the kernel.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+      - type: leads-to-sec-loss
+        target: SL-ZW-3
+
+  - id: SH-ZW-4
+    type: sec-hazard
+    title: A session can reach network peers it was not given
+    status: approved
+    description: >
+      The session can open an IP or UNIX socket to a peer beyond the profile's network mode and
+      allow list, or through a socket family or io_uring path the filter does not cover.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-5
+
+  - id: SH-ZW-5
+    type: sec-hazard
+    title: A run's record is missing, forged or wrong while it is trusted
+    status: approved
+    description: >
+      warte holds no record, a record the session wrote or changed, or a record that does not
+      match what happened, and treats it as the account of the run.
+    fields:
+      cia-impact: [integrity]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-3
+
+  - id: SH-ZW-6
+    type: sec-hazard
+    title: Something outside the session acts on input the session controls
+    status: approved
+    description: >
+      An unconfined process (the shell that started zwinger, a tool the operator runs later, the
+      CI runner, another process of the same user) reads, executes or obeys something the session
+      wrote, or receives a signal or terminal input from it.
+    fields:
+      cia-impact: [integrity, availability]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+      - type: leads-to-sec-loss
+        target: SL-ZW-4
+
+  - id: SH-ZW-7
+    type: sec-hazard
+    title: The session runs under a profile other than the approved one
+    status: approved
+    description: >
+      The profile zwinger loads, or the generated network section in it, differs from what the
+      operator or the reviewed architecture model approved.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+      - type: leads-to-sec-loss
+        target: SL-ZW-5
+
+  - id: SH-ZW-8
+    type: sec-hazard
+    title: A native tool started for the session acts beyond its tool profile
+    status: approved
+    description: >
+      A program spawned through native-exec, or one of its children, runs code or with an
+      environment its per-tool profile does not allow.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+
+  - id: SH-ZW-9
+    type: sec-hazard
+    title: One node's session commands another node beyond its grants
+    status: approved
+    description: >
+      Through the serve channel, a request from a session reaches a remote node and is carried
+      out with more authority than that session holds, or by a peer that is not who it claims.
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-5
+
+  - id: SH-ZW-10
+    type: sec-hazard
+    title: zwinger's pre-exec process does something other than plan, confine, record and exec
+    status: approved
+    description: >
+      zwinger's pre-exec code, which holds the operator's full authority, is processing
+      adversary-shaped control data (profile text, environment, paths, symlinks) in a way that can
+      make it do more than plan, confine, record and exec, or hang.
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-4
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+      - type: leads-to-sec-loss
+        target: SL-ZW-3
+
+  - id: SH-ZW-11
+    type: sec-hazard
+    title: A session exhausts shared host resources
+    status: approved
+    description: >
+      The session fills disks reachable through its write grants, forks without bound or holds
+      memory or CPU so other work on the host fails.
+    fields:
+      cia-impact: [availability]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-4
+
+  - id: SL-ZW-6
+    type: sec-loss
+    title: Output the session was allowed to produce is malicious
+    status: approved
+    description: >
+      Accepted, out of scope for zwinger. The agent writes a backdoor into code it is granted to
+      change, and the code leaves through a legitimate push, merge or release. zwinger bounds what
+      a session can touch, not what it writes where it may write; review gates (pull-request
+      review, CI, signed releases) own this loss.
+    fields:
+      cia-impact: [integrity]
+      stakeholders: [operator, users of the produced software]
+
+  - id: SH-ZW-12
+    type: sec-hazard
+    title: The session holds secrets that reach it outside the profile's paths
+    status: approved
+    description: >
+      Credentials or tokens are available to the session through channels the path rules do not
+      see: the inherited environment, kernel keyrings, or other processes' command lines and
+      environment under a granted /proc.
+    fields:
+      cia-impact: [confidentiality]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+
+  - id: SH-ZW-13
+    type: sec-hazard
+    title: An unconfined process reachable from the session acts on its requests
+    status: approved
+    description: >
+      A server outside the domain (a per-user daemon socket inside a write grant, a Mach service, a
+      D-Bus service) carries out work the session asks for, with that server's authority.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: critical
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+
+  - id: SH-ZW-14
+    type: sec-hazard
+    title: The rules installed refer to filesystem objects other than those checked
+    status: approved
+    description: >
+      The kernel enforces rules on files or directories that differ from the ones zwinger's plan
+      resolved and checked, because a path was re-resolved between planning and installation.
+    fields:
+      cia-impact: [confidentiality, integrity]
+      severity: high
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+
+  - id: SH-ZW-15
+    type: sec-hazard
+    title: Legitimate sessions are refused because of state the session or repository controls
+    status: approved
+    description: >
+      A later run is refused (exit 78) because the session removed a granted directory, or
+      repository content placed a symlink into a denied tree, so work stops and confinement
+      becomes a candidate for removal.
+    fields:
+      cia-impact: [availability]
+      severity: medium
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-4
+
+  - id: SH-ZW-16
+    type: sec-hazard
+    title: A session can change metadata of files outside its grants
+    status: approved
+    description: >
+      On Linux, chmod, chown, utime and extended attributes outside the granted trees are not
+      restricted by Landlock, so a session can make operator files unreadable or world-readable.
+    fields:
+      cia-impact: [confidentiality, integrity, availability]
+      severity: medium
+    links:
+      - type: leads-to-sec-loss
+        target: SL-ZW-1
+      - type: leads-to-sec-loss
+        target: SL-ZW-2
+      - type: leads-to-sec-loss
+        target: SL-ZW-4

@@ -1,0 +1,680 @@
+# STPA-Sec for zwinger, step 3: security unsafe control actions (2026-11-27).
+# Controllers are in safety/stpa/control-structure.yaml.
+
+artifacts:
+  # ── zwinger before exec (CTRL-ZW-LAUNCHER) ──────────────────────────────
+
+  - id: SUCA-ZW-1
+    type: sec-uca
+    title: zwinger execs the command while a profile rule is not enforced
+    status: approved
+    description: >
+      The exec of the command is provided although the confinement step left part of the profile unenforced: an
+      older kernel ABI, a ruleset not fully enforced, a backend failure.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      uca-type: providing
+      context: The kernel lacks a right the profile needs, or sandbox_init or restrict_self fails.
+      adversarial-causation: >
+        A design flaw rather than an adversary-introduced one: the agent cannot cause the kernel's
+        limits, but it exploits any fail-open path, since every later action would run with the
+        operator's authority. A supply-chain attacker who chooses the CI image (an old kernel) can
+        set up the context.
+      attacker-type: insider
+
+  - id: SUCA-ZW-2
+    type: sec-uca
+    title: zwinger grants a path wider than the profile states
+    status: approved
+    description: >
+      The confinement step installs a rule covering more than intended: a symlink resolving into a denied
+      tree, an ancestor grant covering a carve-out Landlock cannot subtract, a noexec tree under a
+      wider grant that keeps Execute.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+      - type: leads-to-sec-hazard
+        target: SH-ZW-2
+    fields:
+      uca-type: providing
+      context: A granted path is a symlink, or a deny lies inside a grant.
+      adversarial-causation: >
+        Tamper: whoever writes the repository plants a symlink at a granted path pointing at a
+        secret, or a profile places a deny_read inside a read grant that Landlock cannot carve.
+      attacker-type: supply-chain
+
+  - id: SUCA-ZW-3
+    type: sec-uca
+    title: zwinger leaves an inherited descriptor open into the session
+    status: approved
+    description: >
+      The exec is provided without closing descriptors from 3 up, so a descriptor opened outside
+      the grants stays usable inside the session.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+      - type: leads-to-sec-hazard
+        target: SH-ZW-2
+    fields:
+      uca-type: not-providing
+      context: The parent (a shell, the CI runner) holds open files or sockets when it starts zwinger.
+      adversarial-causation: >
+        The agent enumerates /proc/self/fd and reads or writes through a descriptor the parent
+        leaked, bypassing path checks, which apply at open time only.
+      attacker-type: insider
+
+  - id: SUCA-ZW-4
+    type: sec-uca
+    title: zwinger loads a profile other than the approved one
+    status: approved
+    description: >
+      The profile named at start is read as it is on disk, which may differ from what the operator
+      approved.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      uca-type: providing
+      context: Between approval and the run, the profile file could be changed by someone other than the operator.
+      adversarial-causation: >
+        Tamper: an adversary able to write the profile file changes its grants before the next
+        run. Detected after the fact by the profile's sha256 in the record; prevented by
+        the trusted-input constraint, not yet enforced.
+      attacker-type: supply-chain
+
+  - id: SUCA-ZW-5
+    type: sec-uca
+    title: zwinger reports a run as confined before the confinement succeeded
+    status: approved
+    description: >
+      The record step writes "confined" too early, before restrict_self and the seccomp install
+      returned success, or records nothing for a refusal.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: too-early-too-late
+      context: The confinement fails after the record is written.
+      adversarial-causation: >
+        A design flaw (an ordering bug), not adversary-introduced. Its effect is a spoofed account:
+        the record says confined while the session runs less confined, which hides an escape the
+        agent then exploits.
+      attacker-type: insider
+
+  - id: SUCA-ZW-6
+    type: sec-uca
+    title: zwinger's parser or planner acts on hostile profile text
+    status: approved
+    description: >
+      The confinement step is computed from profile text an adversary shaped, and a parser or planner bug
+      yields grants the text does not say, or a crash or hang in code that runs unconfined.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-10
+    fields:
+      uca-type: providing
+      context: The profile comes from a repository or generator the adversary can influence.
+      adversarial-causation: >
+        Inject: crafted YAML (duplicate keys, tags, YAML 1.1 booleans, odd Unicode, huge values)
+        aimed at a parsing ambiguity or a panic in the pre-exec code.
+      attacker-type: supply-chain
+
+  # ── kernel enforcement (CTRL-ZW-KERNEL) ─────────────────────────────────
+
+  - id: SUCA-ZW-7
+    type: sec-uca
+    title: The kernel allows a socket the profile's mode forbids
+    status: approved
+    description: >
+      The kernel allows a socket family, an io_uring operation or a connect the network mode
+      forbids, because the seccomp filter or the Landlock net rules miss it.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-KERNEL
+      - type: leads-to-sec-hazard
+        target: SH-ZW-4
+    fields:
+      uca-type: providing
+      context: Mode none, on any supported architecture, in any socket mode.
+      adversarial-causation: >
+        The agent tries every family, x32 syscall numbers on x86_64, io_uring and raw sockets to
+        find a path the filter does not cover.
+      attacker-type: insider
+
+  - id: SUCA-ZW-8
+    type: sec-uca
+    title: The kernel lets the session signal or ioctl outside it
+    status: approved
+    description: >
+      The kernel allows kill(2) to processes outside the session (below Landlock ABI 6) or device
+      ioctls (below ABI 5), and terminal ioctls on the inherited terminal.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-KERNEL
+      - type: leads-to-sec-hazard
+        target: SH-ZW-6
+    fields:
+      uca-type: providing
+      context: Kernel ABI below 6, or a terminal inherited from the operator's shell.
+      adversarial-causation: >
+        Inject: TIOCSTI pushes a command into the operator's shell input; kill(2) stops the CI
+        runner or the operator's processes.
+      attacker-type: insider
+
+  # ── the confined agent (CTRL-ZW-AGENT) ──────────────────────────────────
+
+  - id: SUCA-ZW-9
+    type: sec-uca
+    title: The agent writes something an unconfined process later trusts
+    status: approved
+    description: >
+      The agent writes, within its grants, a file a process outside the session will later load
+      or run.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-6
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      uca-type: providing
+      context: A write grant contains files that unconfined tools or later runs read or execute.
+      adversarial-causation: >
+        Tamper: the agent plants content where a later
+        unconfined step picks it up. Prevented by the trusted-input constraint, not yet
+        enforced.
+      attacker-type: insider
+
+  - id: SUCA-ZW-10
+    type: sec-uca
+    title: The agent forges or deletes confinement records
+    status: approved
+    description: >
+      The agent writes into the events directory, creating, changing or removing records.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: providing
+      context: The events directory lies inside a write grant.
+      adversarial-causation: >
+        Spoof and tamper: the agent writes a record claiming confinement for a run that was not,
+        or deletes the record of its own run.
+      attacker-type: insider
+
+  - id: SUCA-ZW-11
+    type: sec-uca
+    title: The agent exfiltrates through an allowed channel
+    status: approved
+    description: >
+      The agent sends data out through what the profile allows: an unfiltered network or a
+      granted peer. Requests to unconfined servers are a separate UCA.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-4
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+    fields:
+      uca-type: providing
+      context: Network mode unfiltered, or a granted peer that accepts arbitrary uploads.
+      adversarial-causation: >
+        Disclose: prompt-injected instructions tell the agent to post secrets it can read to an
+        attacker's host.
+      attacker-type: external-network
+
+  - id: SUCA-ZW-12
+    type: sec-uca
+    title: The agent exhausts host resources
+    status: approved
+    description: >
+      The agent forks, allocates or writes without bound.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-11
+    fields:
+      uca-type: providing
+      context: No resource limits are applied to the session.
+      adversarial-causation: >
+        Inject: a malicious test in a pull request starts a fork bomb or fills a shared disk
+        through a write grant, so the CI runner or the developer's machine stops serving other work.
+      attacker-type: supply-chain
+
+  # ── kapsel (CTRL-ZW-KAPSEL) ─────────────────────────────────────────────
+
+  - id: SUCA-ZW-13
+    type: sec-uca
+    title: kapsel opens a directory zwinger did not grant
+    status: approved
+    description: >
+      kapsel preopens a directory outside ZWINGER_GRANTS, or falls back to the current
+      directory when the variable is missing.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-KAPSEL
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+      - type: leads-to-sec-hazard
+        target: SH-ZW-2
+    fields:
+      uca-type: providing
+      context: ZWINGER_GRANTS is missing, malformed or set by an earlier command in the session.
+      adversarial-causation: >
+        Spoof: the agent sets ZWINGER_GRANTS itself before calling kapsel, listing directories
+        it wants. The kernel domain still bounds the result, so this widens kapsel's own layer
+        only.
+      attacker-type: insider
+
+  - id: SUCA-ZW-14
+    type: sec-uca
+    title: kapsel hands a construct it does not support to another shell
+    status: approved
+    description: >
+      kapsel runs a command outside kapsel's POSIX subset by delegating it to bash or zsh
+      instead of refusing it.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-KAPSEL
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      uca-type: providing
+      context: The command uses eval, process substitution or another unsupported construct.
+      adversarial-causation: >
+        Inject: crafted command text aims at a fallback path so it runs with a native shell's
+        reach instead of components' preopens.
+      attacker-type: insider
+
+  # ── native-exec host (CTRL-ZW-NATIVEEXEC) ───────────────────────────────
+
+  - id: SUCA-ZW-15
+    type: sec-uca
+    title: native-exec spawns a program that is not the allowlisted one
+    status: approved
+    description: >
+      native-exec spawns a binary that is not on the allowlist, or a different file at an
+      allowlisted path (swapped between check and exec).
+    links:
+      - type: issued-by
+        target: CTRL-ZW-NATIVEEXEC
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      uca-type: providing
+      context: An allowlisted path lies in or under a directory the session can write.
+      adversarial-causation: >
+        Tamper: the agent replaces the file at an allowlisted path, or races a rename between the
+        allowlist check and exec.
+      attacker-type: insider
+
+  - id: SUCA-ZW-16
+    type: sec-uca
+    title: An allowlisted tool runs code the agent wrote
+    status: approved
+    description: >
+      native-exec lets a tool's children run agent-written code inside an exec tree (a cargo build
+      script, a git hook), or passes an injecting environment to the tool.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-NATIVEEXEC
+      - type: leads-to-sec-hazard
+        target: SH-ZW-8
+    fields:
+      uca-type: providing
+      context: The tool's children may execute in trees the session can write.
+      adversarial-causation: >
+        Inject: the agent writes build.rs or a hook, or sets RUSTC_WRAPPER, LD_PRELOAD or
+        GIT_SSH_COMMAND, and asks for an allowlisted build. The kernel bounds it to the union of
+        exec trees (owner decision C); per-tool separation comes with D on Linux.
+      attacker-type: insider
+
+  # ── warte probe (CTRL-ZW-PROBE) ─────────────────────────────────────────
+
+  - id: SUCA-ZW-17
+    type: sec-uca
+    title: The probe reports nothing for a run that left no record
+    status: approved
+    description: >
+      The report to warte is not provided for a run whose record is missing, so warte's account shows no
+      run where one happened.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-PROBE
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: not-providing
+      context: A write grant covers the events directory, or the directory cannot be written.
+      adversarial-causation: >
+        A design gap, not adversary-introduced: the profile author (trusted) can grant write over
+        the events directory, and the agent then exploits runs that leave no trace.
+      attacker-type: insider
+
+  # ── spar (CTRL-ZW-SPAR) ─────────────────────────────────────────────────
+
+  - id: SUCA-ZW-18
+    type: sec-uca
+    title: The generated network section allows peers the reviewed model does not
+    status: approved
+    description: >
+      spar emits hosts or a network mode that differ from the reviewed architecture.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-SPAR
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+      - type: leads-to-sec-hazard
+        target: SH-ZW-4
+    fields:
+      uca-type: providing
+      context: The model files or the generator are changed between review and deployment.
+      adversarial-causation: >
+        Tamper: a change to the model or a Zwinger_Profile::Host value in a repository the agent
+        writes adds an exfiltration host to the next generated profile.
+      attacker-type: supply-chain
+
+  # ── serve channel (CTRL-ZW-SERVE, planned) ──────────────────────────────
+
+  - id: SUCA-ZW-19
+    type: sec-uca
+    title: The serve channel carries a request beyond the requester's grants
+    status: approved
+    description: >
+      The channel carries a request from a session, or from an unauthenticated peer, and the remote
+      node acts on it with more authority than that session holds.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-SERVE
+      - type: leads-to-sec-hazard
+        target: SH-ZW-9
+    fields:
+      uca-type: providing
+      context: Design only (zwinger#10); applies once a channel exists.
+      adversarial-causation: >
+        Spoof and inject: a peer impersonates a node, or a confined session crafts requests the
+        remote side executes as itself.
+      attacker-type: external-network
+
+  # ── operator (CTRL-ZW-OPERATOR) ─────────────────────────────────────────
+
+  - id: SUCA-ZW-20
+    type: sec-uca
+    title: The operator approves grants that cover secrets or persistence locations
+    status: approved
+    description: >
+      The operator approves a profile whose grants include a home directory, credentials, or files
+      unconfined tools later execute.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-OPERATOR
+      - type: leads-to-sec-hazard
+        target: SH-ZW-1
+      - type: leads-to-sec-hazard
+        target: SH-ZW-6
+    fields:
+      uca-type: providing
+      context: A broad grant is the quickest way to make an agent's build work.
+      adversarial-causation: >
+        Inject: the agent's own failure messages steer the operator toward widening grants
+        ("permission denied, add ~ to write").
+      attacker-type: insider
+
+  # ── additions from the soundness review (2026-11-27) ────────────────────
+
+  - id: SUCA-ZW-21
+    type: sec-uca
+    title: The probe reports a record a run did not write
+    status: approved
+    description: >
+      The report to warte is provided for a record that another session or a later process of
+      the same user created or changed.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-PROBE
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: providing
+      context: A profile somewhere on the host grants write over the events directory.
+      adversarial-causation: >
+        Spoof: a session with write over the events directory writes records claiming clean,
+        confined runs, or deletes records of other runs.
+      attacker-type: insider
+
+  - id: SUCA-ZW-22
+    type: sec-uca
+    title: The probe collects a record before zwinger has written it
+    status: approved
+    description: >
+      The report is provided too early: the record file exists, empty, from before confinement
+      until zwinger writes it, and a probe that collects it then loses the content.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-PROBE
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: too-early-too-late
+      context: The probe watches the directory and reacts to file creation.
+      adversarial-causation: >
+        A race in the design, not adversary-introduced; a session that delays its own start
+        widens the window.
+      attacker-type: insider
+
+  - id: SUCA-ZW-23
+    type: sec-uca
+    title: The probe stops reporting because the session killed it
+    status: approved
+    description: >
+      Reporting is stopped too soon: on Linux below Landlock ABI 6, a session can signal a probe
+      that runs as the same user.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-PROBE
+      - type: leads-to-sec-hazard
+        target: SH-ZW-5
+    fields:
+      uca-type: stopped-too-soon
+      context: The probe runs as the operator's user and the kernel lacks signal scoping.
+      adversarial-causation: >
+        Tamper: the agent sends SIGKILL to the probe so later runs go unreported.
+      attacker-type: insider
+
+  - id: SUCA-ZW-24
+    type: sec-uca
+    title: zwinger installs a domain that leaves an unconfined server reachable
+    status: approved
+    description: >
+      The confinement step installs a domain in which an endpoint of a server outside the session
+      (a socket in a write tree, a Mach service) stays reachable, so the server can act for it.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-13
+    fields:
+      uca-type: providing
+      context: A server's socket or service is reachable from the session.
+      adversarial-causation: >
+        Inject: the agent sends requests to a reachable server, which executes them with its own
+        authority, outside the session's domain.
+      attacker-type: insider
+
+  - id: SUCA-ZW-25
+    type: sec-uca
+    title: zwinger installs rules for objects other than those it checked
+    status: approved
+    description: >
+      The confinement step installs rules too late relative to its checks: a granted path is
+      resolved and checked, then opened again by path for the kernel rule.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-14
+    fields:
+      uca-type: too-early-too-late
+      context: Another process can change a directory on a granted path while zwinger plans.
+      adversarial-causation: >
+        Tamper: a still-running session swaps a path component between check and open. Tracked
+        with the owner.
+      attacker-type: insider
+
+  - id: SUCA-ZW-26
+    type: sec-uca
+    title: zwinger execs a command found through a writable PATH entry
+    status: approved
+    description: >
+      The exec resolves the command name through PATH, and an earlier PATH entry the session
+      could write holds a different program of that name.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      uca-type: providing
+      context: The operator names the command without a path, and a write grant is on PATH.
+      adversarial-causation: >
+        Tamper: an earlier session places a program named like the agent in a write-granted PATH
+        directory. It still runs confined, but the operator believes the agent ran.
+      attacker-type: supply-chain
+
+  - id: SUCA-ZW-27
+    type: sec-uca
+    title: zwinger refuses legitimate work because of state the attacker set
+    status: approved
+    description: >
+      The refusal is provided when the reason is state the session or repository controls, such
+      as a deleted granted directory or a planted symlink into a denied tree.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-LAUNCHER
+      - type: leads-to-sec-hazard
+        target: SH-ZW-15
+    fields:
+      uca-type: providing
+      context: The profile names paths inside the repository or the session's write trees.
+      adversarial-causation: >
+        Tamper: the agent or repository content removes or replaces a granted path so every later
+        run refuses, pushing the operator to widen grants or run unconfined.
+      attacker-type: insider
+
+  - id: SUCA-ZW-28
+    type: sec-uca
+    title: The operator runs the agent without zwinger
+    status: approved
+    description: >
+      Starting the agent under zwinger is not provided: after refusals or friction, the operator
+      runs it directly.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-OPERATOR
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      uca-type: not-providing
+      context: zwinger refuses repeatedly, or a build needs a grant the operator cannot work out.
+      adversarial-causation: >
+        Inject: the agent's messages argue that the sandbox is the problem ("run me without
+        zwinger to fix this").
+      attacker-type: insider
+
+  - id: SUCA-ZW-29
+    type: sec-uca
+    title: spar emits an empty or stale network section
+    status: approved
+    description: >
+      The generated section is not provided, or is provided from an older model, and the
+      deployment falls back to a default or keeps the old peers.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-SPAR
+      - type: leads-to-sec-hazard
+        target: SH-ZW-7
+    fields:
+      uca-type: not-providing
+      context: Generation fails or is skipped in deployment.
+      adversarial-causation: >
+        Tamper: a change that breaks generation makes the deployment keep or default a wider
+        network section.
+      attacker-type: supply-chain
+
+  - id: SUCA-ZW-30
+    type: sec-uca
+    title: A macOS update changes what a Seatbelt policy enforces
+    status: approved
+    description: >
+      The kernel provides different enforcement for the same policy text after an OS update,
+      because Seatbelt's profile language is not API, and zwinger does not refuse.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-KERNEL
+      - type: leads-to-sec-hazard
+        target: SH-ZW-3
+    fields:
+      uca-type: providing
+      context: A macOS version other than those CI tests (macOS 15).
+      adversarial-causation: >
+        Not adversary-introduced; the agent exploits any rule that silently stopped applying.
+      attacker-type: insider
+
+  - id: SUCA-ZW-31
+    type: sec-uca
+    title: The agent reads secrets from its environment or the kernel
+    status: approved
+    description: >
+      The agent reads credentials it inherited in its environment, from kernel keyrings, or from
+      other processes under a granted /proc.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-12
+    fields:
+      uca-type: providing
+      context: The operator's environment holds tokens; the session can reach keyrings or /proc.
+      adversarial-causation: >
+        Disclose: injected instructions tell the agent to print its environment and keyrings and
+        send them out through any allowed channel.
+      attacker-type: external-network
+
+  - id: SUCA-ZW-32
+    type: sec-uca
+    title: The agent changes metadata of files outside its grants
+    status: approved
+    description: >
+      The agent changes permissions, ownership, times or extended attributes of files outside its
+      grants, which Landlock does not restrict on Linux.
+    links:
+      - type: issued-by
+        target: CTRL-ZW-AGENT
+      - type: leads-to-sec-hazard
+        target: SH-ZW-16
+    fields:
+      uca-type: providing
+      context: Linux, any profile.
+      adversarial-causation: >
+        Tamper: the agent runs chmod 000 on operator files to block work, or chmod o+r on a secret
+        to expose it to other users.
+      attacker-type: insider

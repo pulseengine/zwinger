@@ -1,0 +1,198 @@
+# zwinger control structure (STPA-Sec, 2026-11-27).
+#
+# zwinger is a security boundary: it confines an AI agent and everything the agent starts. The
+# adversary is the confined agent itself, plus anyone who can write to its inputs: prompts,
+# repository content, the profile file and the events directory. The structure covers
+# zwinger, the kernel mechanisms it drives, kapsel (the capability shell that runs under
+# zwinger), kiln's native-exec host, warte's probe (the event record), spar (the generated
+# network section, zwinger#17) and the planned serve channel between nodes (zwinger#10).
+# The analysis is in safety/stpa-sec/.
+
+controllers:
+  - id: CTRL-ZW-OPERATOR
+    name: Operator
+    type: human
+    description: >
+      The person or deployment (smithy, a developer) who writes or approves the profile, starts
+      zwinger, and reads its startup line, `check` and `explain` output, and warte's records.
+    control-actions:
+      - ca: CA-ZW-OP-1
+        target: CTRL-ZW-LAUNCHER
+        action: Start `zwinger run PROFILE -- COMMAND` with a chosen profile
+      - ca: CA-ZW-OP-2
+        target: CTRL-ZW-LAUNCHER
+        action: Approve or write the profile's grants, carve-outs, network mode and env_keep
+    feedback:
+      - from: CTRL-ZW-LAUNCHER
+        info: Startup line (confined, ABI, not enforced, environment removed), exit 78 refusals, check and explain output
+      - from: CTRL-ZW-PROBE
+        info: Confinement records in warte
+    process-model:
+      - The profile on disk is the one they approved
+      - A run that did not refuse was confined as the startup line says
+
+  - id: CTRL-ZW-LAUNCHER
+    name: zwinger (before exec)
+    type: automated
+    source-file: src/main.rs
+    description: >
+      The zwinger process from start to exec: loads and validates the profile, plans grants,
+      checks what the kernel can enforce, opens the event record, confines itself, scrubs the
+      environment, passes ZWINGER_GRANTS and execs the command. Everything it does runs with
+      the operator's full authority, so it is the trusted base (docs/trusted-base.md).
+    control-actions:
+      - ca: CA-ZW-L-1
+        target: CTRL-ZW-KERNEL
+        action: Install the Landlock ruleset and seccomp filter, or the Seatbelt policy
+      - ca: CA-ZW-L-2
+        target: CTRL-ZW-AGENT
+        action: Exec the command, with the scrubbed environment and ZWINGER_GRANTS
+      - ca: CA-ZW-L-3
+        target: PROC-ZW-RECORD
+        action: Write one confinement record per run
+      - ca: CA-ZW-L-4
+        target: CTRL-ZW-OPERATOR
+        action: Refuse with exit 78 and the reason
+    feedback:
+      - from: CTRL-ZW-KERNEL
+        info: Landlock ABI, ruleset status (fully enforced, no_new_privs), seccomp result, sandbox_init result
+    process-model:
+      - The profile text it read is the operator's
+      - The kernel enforces every right it was given and reports what it lacks
+      - Inherited descriptors are closed before exec
+
+  - id: CTRL-ZW-KERNEL
+    name: Kernel enforcement (Landlock and seccomp, or Seatbelt)
+    type: automated
+    description: >
+      Enforces the domain zwinger installed on every process of the session, for the life of the
+      session, independent of what the session does.
+    control-actions:
+      - ca: CA-ZW-K-1
+        target: PROC-ZW-HOST
+        action: Allow or deny each file, socket, ioctl and exec the session attempts
+      - ca: CA-ZW-K-2
+        target: PROC-ZW-NET
+        action: Allow or deny socket creation and connects
+    feedback: []
+    process-model:
+      - The domain is inherited by every descendant and cannot be widened
+
+  - id: CTRL-ZW-AGENT
+    name: Confined AI agent (adversary)
+    type: automated
+    description: >
+      The agent and every process it starts. Treated as hostile: it may be misaligned, or steered
+      by prompt injection through repository content, fetched pages or tool output. It acts only
+      through the kernel's checks.
+    control-actions:
+      - ca: CA-ZW-A-1
+        target: PROC-ZW-HOST
+        action: Read, write, exec, ioctl and signal within the host
+      - ca: CA-ZW-A-2
+        target: PROC-ZW-NET
+        action: Open sockets and connect
+      - ca: CA-ZW-A-3
+        target: CTRL-ZW-KAPSEL
+        action: Submit shell commands
+    feedback:
+      - from: CTRL-ZW-KERNEL
+        info: EACCES, EPERM, EXDEV on denials
+      - from: CTRL-ZW-LAUNCHER
+        info: ZWINGER_PROFILE, ZWINGER_ABI, ZWINGER_GRANTS
+    process-model: []
+
+  - id: CTRL-ZW-KAPSEL
+    name: kapsel (capability shell under zwinger)
+    type: automated
+    description: >
+      pulseengine/kapsel. Parses a command in a POSIX subset, refuses what is outside it, runs
+      commands as WASI components that see only preopens derived from ZWINGER_GRANTS, and hands
+      allowlisted native tools to the native-exec host. Runs inside zwinger's domain.
+    control-actions:
+      - ca: CA-ZW-S-1
+        target: PROC-ZW-HOST
+        action: Preopen granted directories for a component and run it
+      - ca: CA-ZW-S-2
+        target: CTRL-ZW-NATIVEEXEC
+        action: Request a native tool run
+    feedback:
+      - from: CTRL-ZW-LAUNCHER
+        info: ZWINGER_GRANTS (zwinger.grants.v1)
+    process-model:
+      - ZWINGER_GRANTS is the plan zwinger enforces
+
+  - id: CTRL-ZW-NATIVEEXEC
+    name: native-exec host (kiln, or kapsel's wasmtime host)
+    type: automated
+    description: >
+      Spawns allowlisted native programs by canonical path and inode, with a per-tool profile and
+      an environment allowlist (kapsel#140, owner decision C now, D on Linux).
+    control-actions:
+      - ca: CA-ZW-N-1
+        target: PROC-ZW-HOST
+        action: Spawn an allowlisted native tool, with its children governed by the per-tool profile
+    feedback: []
+    process-model:
+      - The binary at the allowlisted path is the one that was allowlisted
+
+  - id: CTRL-ZW-PROBE
+    name: warte probe
+    type: automated
+    description: >
+      Reads confinement records from the events directory and forwards them to warte over relay
+      (warte#223, option A, YAML records).
+    control-actions:
+      - ca: CA-ZW-P-1
+        target: CTRL-ZW-OPERATOR
+        action: Report each run's confinement to warte
+    feedback:
+      - from: PROC-ZW-RECORD
+        info: Event records
+    process-model:
+      - Every run left exactly one record, and no record was written by a session
+
+  - id: CTRL-ZW-SPAR
+    name: spar (network section generator)
+    type: automated
+    description: >
+      Generates a session's network section from the architecture model (zwinger#17); the
+      deployment puts it into the profile.
+    control-actions:
+      - ca: CA-ZW-G-1
+        target: CTRL-ZW-OPERATOR
+        action: Emit the network section (mode, allow, local binding, UNIX sockets) for a session
+    feedback: []
+    process-model:
+      - The model is the reviewed architecture
+
+  - id: CTRL-ZW-SERVE
+    name: serve channel between nodes (planned, zwinger#10)
+    type: automated
+    description: >
+      Design only (owner: not yet). A confined channel through which a session on one node asks a
+      zwinger on another node to act, for example on a device.
+    control-actions:
+      - ca: CA-ZW-R-1
+        target: PROC-ZW-NET
+        action: Carry a request from one node's session to another node and its result back
+    feedback: []
+    process-model: []
+
+controlled-processes:
+  - id: PROC-ZW-HOST
+    name: Host resources
+    description: >
+      Files, devices, processes and terminals of the machine, including the operator's secrets,
+      other projects, the shell that started zwinger, and tools that run later outside zwinger.
+
+  - id: PROC-ZW-NET
+    name: Network peers
+    description: >
+      Hosts and services reachable over IP or UNIX sockets, including other nodes of a mesh.
+
+  - id: PROC-ZW-RECORD
+    name: Confinement records
+    description: >
+      The events directory and the records in it, which warte's probe treats as the account of
+      each run.
