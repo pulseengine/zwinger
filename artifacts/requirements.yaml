@@ -155,8 +155,10 @@ artifacts:
       carve-out, noexec, network, kernel, backend), the Landlock ABI, the network mode, the
       not-enforced list and grant counts, and no path, argument or command line. The file is
       opened before the session is confined, so the session needs no grant for the events
-      directory and cannot write there. Writing events never changes whether a session is
-      confined or refused: a failure is reported on stderr. ZWINGER_EVENTS_DIR overrides the
+      directory. When a write grant covers the events directory, no event is written and stderr
+      says why, because the session could forge or delete events there and Landlock cannot carve
+      the directory out of the grant. Writing events never changes whether a session is confined
+      or refused: a failure is reported on stderr. ZWINGER_EVENTS_DIR overrides the
       directory (empty turns events off). The default is $XDG_STATE_HOME/warte/zwinger, else
       ~/.local/state/warte/zwinger.
 

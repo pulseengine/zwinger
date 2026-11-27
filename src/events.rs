@@ -186,6 +186,7 @@ pub fn sha256_file(path: &Path) -> Option<String> {
 /// no grant: Landlock checks a file when it is opened, not when an open descriptor is written.
 pub struct Pending {
     file: std::fs::File,
+    path: PathBuf,
 }
 
 impl Pending {
@@ -200,12 +201,18 @@ impl Pending {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
+        let path = dir.join(format!("{nanos}-{}.json", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(dir.join(format!("{nanos}-{}.json", std::process::id())))?;
-        Ok(Pending { file })
+            .open(&path)?;
+        Ok(Pending { file, path })
+    }
+
+    /// Remove the still-empty file, before the session is confined.
+    fn discard(self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 
     /// Write the event as one line, in one write.
@@ -216,19 +223,41 @@ impl Pending {
     }
 }
 
-/// `Pending::create` in the default dir, reporting (not failing on) any error.
-pub fn begin() -> Option<Pending> {
-    let dir = default_dir()?;
-    match Pending::create(&dir) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            eprintln!(
-                "zwinger: events: cannot create an event file in {}: {e}; continuing without",
-                dir.display()
-            );
-            None
-        }
+/// The write grant (resolved) that covers `dir` (resolved), if any. A confined session can
+/// create, change and delete files under its write grants, so events written there could be
+/// forged or removed by the session they report on.
+pub fn covering_grant<'a>(dir: &Path, write_grants: &'a [PathBuf]) -> Option<&'a PathBuf> {
+    write_grants.iter().find(|g| crate::profile::within(dir, g))
+}
+
+/// `Pending::create` in the default dir, reporting (not failing on) any error. When a write
+/// grant covers the dir, no event is written and stderr says why: an event the session could
+/// forge is worse than none. Landlock cannot carve the dir out of the grant.
+pub fn begin(write_grants: &[PathBuf]) -> Option<Pending> {
+    begin_in(&default_dir()?, write_grants)
+}
+
+/// `begin` for an explicit dir.
+pub fn begin_in(dir: &Path, write_grants: &[PathBuf]) -> Option<Pending> {
+    let pending = Pending::create(dir).map_err(|e| {
+        eprintln!(
+            "zwinger: events: cannot create an event file in {}: {e}; continuing without",
+            dir.display()
+        );
+    });
+    let pending = pending.ok()?;
+    let resolved = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if let Some(g) = covering_grant(&resolved, write_grants) {
+        eprintln!(
+            "zwinger: events: {} lies inside the write grant {}, so the session could forge \
+             or delete its events; writing none",
+            resolved.display(),
+            g.display()
+        );
+        pending.discard();
+        return None;
     }
+    Some(pending)
 }
 
 /// Write `event` to `pending` if there is one, reporting (not failing on) any error.
@@ -427,6 +456,32 @@ mod tests {
                 .ends_with(".json")
         );
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    // rivet: verifies REQ-ZW-014
+    #[test]
+    fn no_event_where_a_write_grant_covers_the_dir() {
+        let root = std::env::temp_dir().join(format!("zwinger-evg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("w/events");
+        std::fs::create_dir_all(root.join("w")).unwrap();
+        let w = root.join("w").canonicalize().unwrap();
+        let other = root.canonicalize().unwrap().join("elsewhere");
+        assert_eq!(
+            covering_grant(&w.join("events"), &[other.clone(), w.clone()]),
+            Some(&w)
+        );
+        assert_eq!(
+            covering_grant(&w.join("events"), std::slice::from_ref(&other)),
+            None
+        );
+        assert!(begin_in(&dir, std::slice::from_ref(&w)).is_none());
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert!(left.is_empty(), "the discarded file stays behind");
+        let p = begin_in(&dir, &[other]).expect("no covering grant");
+        p.finish(&Event::refused(None, None, "path")).unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

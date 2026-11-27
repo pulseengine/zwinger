@@ -666,3 +666,15 @@ fn a_refused_run_writes_its_category_and_no_reason_text() {
     assert_eq!(evs[0]["landlock_abi"], serde_json::Value::Null);
     assert!(!evs[0].to_string().contains(s(&sc.root.0)));
 }
+
+// rivet: verifies REQ-ZW-014
+#[test]
+fn no_event_is_written_where_the_session_could_forge_it() {
+    let sc = Scene::new("");
+    let dir = sc.path("w/events");
+    let o = sc.run_env(&bash("true"), &[("ZWINGER_EVENTS_DIR", s(&dir))]);
+    assert!(o.status.success(), "the session still runs");
+    assert!(events_in(&dir).is_empty());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("lies inside the write grant"), "{err}");
+}

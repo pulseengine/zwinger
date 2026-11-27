@@ -30,7 +30,7 @@ fn main() -> ExitCode {
                 Ok(p) => run(&p, path, &args[3], &args[4..]),
                 Err(e) => {
                     let sha = events::sha256_file(path);
-                    events::end(events::begin(), &Event::refused(None, sha, "profile"));
+                    events::end(events::begin(&[]), &Event::refused(None, sha, "profile"));
                     refuse(&e.to_string())
                 }
             }
@@ -57,7 +57,12 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
     use zwinger::profile::NetworkMode;
     // Open the event file and hash the profile before confining: afterwards neither path is
     // reachable, while the open descriptor stays writable.
-    let pending = events::begin();
+    // No event where the session could forge it: a write grant covering the events dir.
+    let grants: Vec<std::path::PathBuf> = p
+        .writes()
+        .filter_map(|(_, w)| w.canonicalize().ok())
+        .collect();
+    let pending = events::begin(&grants);
     let sha = events::sha256_file(path);
     let (enf, plan) = match zwinger::linux::confine(p) {
         Ok(c) => c,
