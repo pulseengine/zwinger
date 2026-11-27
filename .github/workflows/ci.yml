@@ -213,8 +213,16 @@ jobs:
       # kernel) has no verification yet; REQ-ZW-017 (generated peers) waits for zwinger#14 and
       # spar 0.50; REQ-ZW-020 (WASM shell) is design only.
       # Raise this as they land.
+      # The release in progress (rivet `release:`) is planned work: the gate covers everything
+      # else, and that release's burn-down is reported without failing. Move IN_FLIGHT to the
+      # next release when this one is tagged.
       - name: Requirement verification coverage
-        run: rivet coverage --fail-under 93 --strict-empty
+        env:
+          IN_FLIGHT: v0.2.0
+        run: |
+          rivet coverage --fail-under 93 --strict-empty --filter "(not (= release \"$IN_FLIGHT\"))"
+          echo "Burn-down of $IN_FLIGHT (not gated):"
+          rivet coverage --filter "(= release \"$IN_FLIGHT\")"
 
   architecture:
     name: Architecture model (spar)
