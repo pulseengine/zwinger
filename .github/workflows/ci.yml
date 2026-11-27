@@ -26,6 +26,8 @@ env:
   RUST_TOOLCHAIN: 1.99.1
   # rivet v0.41.1, the rivet in the varve layer pinned by varve.toml (2026.11.10).
   RIVET_REV: 29ca43828c8060af135fcd47ecff4c48662d1567
+  # spar v0.49.0, the spar in the same varve layer.
+  SPAR_REV: da271e963955c97eae59dc1884a3ffb34142da39
   CARGO_MUTANTS_VERSION: 27.0.0
   KANI_VERSION: 0.68.0
   # Verus release (Z3 bundled) and the sha256 of its x86-linux archive. vstd in Cargo.toml is
@@ -204,12 +206,79 @@ jobs:
       - name: Links have their inverses
         run: rivet check bidirectional
 
-      # Requirement verification is 13 of 15 (2026-11-27): REQ-ZW-003 (the Endpoint Security
+      # Requirement verification is 15 of 18 (2026-11-27): REQ-ZW-003 (the Endpoint Security
       # client) waits for the VM, and its Seatbelt stepping stone is REQ-ZW-015; REQ-ZW-007 (Pi
-      # kernel) has no verification yet.
+      # kernel) has no verification yet; REQ-ZW-017 (generated peers) waits for zwinger#14.
       # Raise this as they land.
       - name: Requirement verification coverage
         run: rivet coverage --fail-under 93 --strict-empty
+
+  architecture:
+    name: Architecture model (spar)
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Cache spar binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/spar
+          key: spar-${{ runner.os }}-${{ runner.arch }}-${{ env.SPAR_REV }}
+
+      # Job-scoped, like rivet: never trust a spar left in $HOME on a persistent runner.
+      - name: Install spar (pinned rev, job-scoped)
+        env:
+          RUSTFLAGS: ""
+        run: |
+          ROOT="$RUNNER_TEMP/spar"
+          if [ ! -x "$ROOT/bin/spar" ]; then
+            cargo install --locked --git https://github.com/pulseengine/spar \
+              --rev "$SPAR_REV" --root "$ROOT" --bin spar spar
+          fi
+          v="$("$ROOT/bin/spar" --version)"
+          echo "$v"
+          [[ "$v" == "spar 0.49.0" ]]
+          echo "$ROOT/bin" >> "$GITHUB_PATH"
+          jq --version
+
+      - name: Model gate (fail-closed, telemetry, WCTT)
+        run: architecture/check.sh
+
+      # Each planted model must fail the gate, or the gate measures nothing.
+      - name: Planted models are rejected
+        run: |
+          set -u
+          plant() {
+            local d="$RUNNER_TEMP/planted-$1"
+            rm -rf "$d"; mkdir -p "$d"; cp architecture/*.aadl "$d/"
+            echo "$d"
+          }
+          d="$(plant commission)"
+          perl -0pi -e 's/(        events_out : out propagation \{ServiceOmission\};\n)/$1        access_out : out propagation {ItemCommission};\n/; s/(        event_lost   : error source events_out \{ServiceOmission\};.*\n)/$1        leak : error source access_out {ItemCommission};\n/' "$d/zwinger.aadl"
+          grep -q 'leak : error source access_out' "$d/zwinger.aadl"
+          if architecture/check.sh "$d"; then echo "::error::planted ItemCommission passed"; exit 1; fi
+          d="$(plant nobound)"
+          perl -0pi -e 's/      Spar_Network::Switch_Type        => FIFO;\n//' "$d/reference_mesh.aadl"
+          if grep -q Switch_Type "$d/reference_mesh.aadl"; then echo "::error::plant failed"; exit 1; fi
+          if architecture/check.sh "$d"; then echo "::error::model without a switch passed"; exit 1; fi
+          d="$(plant telemetry)"
+          perl -0pi -e 's/        event_lost   : error source events_out \{ServiceOmission\};.*\n//; s/        events_out : out propagation \{ServiceOmission\};\n//' "$d/zwinger.aadl"
+          if grep -q event_lost "$d/zwinger.aadl"; then echo "::error::plant failed"; exit 1; fi
+          if architecture/check.sh "$d"; then echo "::error::model without event loss passed"; exit 1; fi
+          d="$(plant revive)"
+          perl -0pi -e 's/(      run_noexec : confined -\[exec_failed\]-> exited;\n)/$1      revive     : refused -[preflight_ok]-> confined;\n/' "$d/zwinger.aadl"
+          grep -q 'revive     : refused' "$d/zwinger.aadl"
+          if architecture/check.sh "$d"; then echo "::error::a refused session becoming confined passed"; exit 1; fi
+          d="$(plant skip)"
+          perl -0pi -e 's/(      run_noexec : confined -\[exec_failed\]-> exited;\n)/$1      skip       : loading -[preflight_ok]-> confined;\n/' "$d/zwinger.aadl"
+          grep -q 'skip       : loading' "$d/zwinger.aadl"
+          if architecture/check.sh "$d"; then echo "::error::confining without preflight passed"; exit 1; fi
+          echo "all five planted models rejected"
 
   mutants:
     # The profile parser, the Linux planner (refusals, ABI decisions, seccomp program) and the
