@@ -85,6 +85,15 @@ The directory is `ZWINGER_EVENTS_DIR` if set (empty turns events off), else `$XD
 
 Twelve planted bugs must each be rejected, so a proof that stopped looking fails the job. The trusted base is the classic-BPF model in `bpf_run`, the shared syscall constants, `within` (checked exhaustively against `Path::starts_with` by unit test) and Kani/CBMC; `tests/linux.rs` runs the same filter in real kernels.
 
+`cargo verus verify` proves the path rules for paths of **any length** (`src/pathrules.rs`, CI job "Verus proofs"). Kani's carve-out and noexec harnesses cover paths of up to 4 bytes. The code inside `verus!` is the shipped code: a normal build erases the proofs, and `within` and the linux checkers call it. Verus proves:
+
+- `within` computes its specification for all byte strings;
+- two ancestors of a path are nested, and `within` is transitive;
+- if the carve-out checker accepts a profile, every path beneath a `deny_read` or `deny_write` stays uncovered except by a stated read exception;
+- if the noexec checker accepts, every grant covering a path beneath a `noexec` tree has lost execute.
+
+Three planted bugs must each fail verification. Kani (CBMC) and Verus (Z3) check the same functions, so a gap in one solver is not shared by the other.
+
 ## Releases
 
 Tagged releases publish static Linux binaries (`x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`), a CycloneDX SBOM and a docs archive. All of them are listed in `SHA256SUMS.txt`, which is signed with cosign keyless; the archives also carry SLSA build provenance. To verify a download and pin it by sha256:

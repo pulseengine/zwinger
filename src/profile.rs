@@ -124,14 +124,7 @@ pub fn normalize(p: &Path) -> PathBuf {
 /// {'/', 'a', 'b', '.'}. It is a single comparison so the Kani proofs can reason about it.
 pub fn within(inner: &Path, outer: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
-    let (i, o) = (inner.as_os_str().as_bytes(), outer.as_os_str().as_bytes());
-    if o.is_empty() {
-        return true;
-    }
-    if o == b"/" {
-        return i.first() == Some(&b'/');
-    }
-    i.len() >= o.len() && i[..o.len()] == *o && (i.len() == o.len() || i[o.len()] == b'/')
+    crate::pathrules::within_bytes(inner.as_os_str().as_bytes(), outer.as_os_str().as_bytes())
 }
 
 impl Profile {

@@ -28,6 +28,10 @@ env:
   RIVET_REV: 29ca43828c8060af135fcd47ecff4c48662d1567
   CARGO_MUTANTS_VERSION: 27.0.0
   KANI_VERSION: 0.68.0
+  # Verus release (Z3 bundled) and the sha256 of its x86-linux archive. vstd in Cargo.toml is
+  # pinned to the matching build (0.0.0-2026-11-01-0251).
+  VERUS_RELEASE: 0.2026.11.02.8bf68ee
+  VERUS_SHA256: f3a0119292df8855e4435da8130bee1873b0e6a60c306accf81a08ea687bba3c
 
 jobs:
   linux:
@@ -228,3 +232,69 @@ jobs:
           echo "$summary"
           total="$(echo "$summary" | sed -E 's/.* ([0-9]+) total\./\1/')"
           test "$total" -ge 26
+
+  verus:
+    # Verus (Z3) proves the path rules in src/pathrules.rs for paths of any length: within_bytes
+    # computes its spec, ancestors of a path are nested, and the carve-out and noexec checkers
+    # are sound. Kani checks the same shipped functions for short paths with CBMC.
+    name: Verus proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          # Verus checks that the toolchain it was built for is installed.
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Verus ${{ env.VERUS_RELEASE }} (sha256-checked)
+        run: |
+          set -euo pipefail
+          zip="verus-${VERUS_RELEASE}-x86-linux.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$zip" \
+            "https://github.com/verus-lang/verus/releases/download/release/${VERUS_RELEASE}/$zip"
+          echo "${VERUS_SHA256}  $RUNNER_TEMP/$zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/$zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/verus-x86-linux" >> "$GITHUB_PATH"
+
+      # The first results line is vstd's own; zwinger's follows its "Checking zwinger" line. A
+      # run that never verified zwinger (a missing [package.metadata.verus] or a cached check)
+      # prints no such line and fails here, and fewer obligations than today (18) fail too.
+      - name: Verus (zwinger's crate)
+        env:
+          CARGO_TARGET_DIR: target/verus
+        run: |
+          set -o pipefail
+          cargo verus verify 2>&1 | tee verus.log
+          line="$(awk '/Checking zwinger /{f=1} f && /^verification results::/{print; exit}' verus.log)"
+          echo "zwinger: $line"
+          [[ "$line" =~ ^verification\ results::\ ([0-9]+)\ verified,\ 0\ errors$ ]]
+          test "${BASH_REMATCH[1]}" -ge 18
+
+      # cargo-mutants cannot see code inside verus!, so the proofs' potency is checked here:
+      # each planted bug must apply and then fail verification with a proof error.
+      - name: Verus planted bugs (each must be rejected)
+        env:
+          CARGO_TARGET_DIR: target/verus
+        run: |
+          set -uo pipefail
+          bak="$RUNNER_TEMP/pathrules.rs.bak"
+          plant() {
+            cp src/pathrules.rs "$bak"
+            perl -0pi -e "$1" src/pathrules.rs
+            if cmp -s src/pathrules.rs "$bak"; then echo "planted bug did not apply: $2"; exit 1; fi
+            if cargo verus verify > "$RUNNER_TEMP/planted.log" 2>&1; then
+              cp "$bak" src/pathrules.rs; echo "planted bug VERIFIED (proof is vacuous): $2"; exit 1
+            fi
+            grep -qE '^error: (postcondition|invariant|assertion)' "$RUNNER_TEMP/planted.log" \
+              || { cp "$bak" src/pathrules.rs; echo "planted bug failed for another reason: $2"; tail -20 "$RUNNER_TEMP/planted.log"; exit 1; }
+            cp "$bak" src/pathrules.rs
+            echo "rejected as required: $2"
+          }
+          plant 's/inner\.len\(\) == outer\.len\(\) \|\| inner\[outer\.len\(\)\] == b\x27\/\x27\n\}/true\n}/' \
+            "within_bytes ignores the component boundary"
+          plant 's/            if within_bytes\(g\.resolved, d\.resolved\) \{\n                return Some\(Violation \{ deny_inside_grant: false, deny_write: true,[^\n]*\n            \}\n//' \
+            "carve-out checker misses a write grant inside a deny_write"
+          plant 's/            if within_bytes\(noexec\[n\], grants\[g\]\) && !within_bytes\(grants\[g\], noexec\[n\]\) \{\n                return Some\(\(n, g\)\);\n            \}\n//' \
+            "noexec checker accepts a tree inside a wider grant"

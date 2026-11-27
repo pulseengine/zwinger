@@ -13,6 +13,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The profile file's sha256 in confinement events (REQ-ZW-014).
 sha2 = "0.10"
+# Verus support (REQ-ZW-008 proofs, src/pathrules.rs). A normal build erases specs and proofs
+# and keeps plain Rust. Pinned to the release paired with Verus 0.2026.11.02.8bf68ee.
+vstd = { version = "=0.0.0-2026-11-01-0251", default-features = false }
 # rivet's own YAML stack (lossless CST + serde), the parser every pulseengine artifact file goes
 # through. Not on crates.io yet (rivet#1099), so it is pinned by release tag; Cargo.lock pins the commit.
 rivet-yaml = { git = "https://github.com/pulseengine/rivet", tag = "v0.43.3" }
@@ -28,4 +31,8 @@ libc = "0.2"
 
 [lints.rust]
 # `cfg(kani)` is set by `cargo kani` for the proof harnesses in src/linux.rs.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(verus_keep_ghost)', 'cfg(verus_keep_ghost_body)'] }
+
+[package.metadata.verus]
+# cargo verus verifies only crates that opt in (src/pathrules.rs holds the proofs).
+verify = true

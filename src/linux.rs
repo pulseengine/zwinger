@@ -51,10 +51,16 @@ pub struct Plan {
     pub noexec: Vec<PathBuf>,
 }
 
+fn bytes<'a>(paths: &[&'a Path]) -> Vec<&'a [u8]> {
+    use std::os::unix::ffi::OsStrExt;
+    paths.iter().map(|p| p.as_os_str().as_bytes()).collect()
+}
+
 /// Whether a grant keeps Landlock's execute right: not when it lies at or beneath a `noexec`
-/// tree.
+/// tree. `pathrules::may_exec_bytes` on the paths' bytes.
 pub fn may_exec(grant: &Path, noexec: &[&Path]) -> bool {
-    !noexec.iter().any(|n| within(grant, n))
+    use std::os::unix::ffi::OsStrExt;
+    crate::pathrules::may_exec_bytes(grant.as_os_str().as_bytes(), &bytes(noexec))
 }
 
 /// A `noexec` tree that lies strictly inside a grant, by index into each list. That grant's
@@ -66,22 +72,14 @@ pub struct NoexecViolation {
     pub grant: usize,
 }
 
-/// The `noexec` rule on resolved paths, allocation-free so the Kani proof covers it. A profile
-/// is enforceable as written exactly when no grant strictly contains a `noexec` tree: then every
+/// The `noexec` rule on resolved paths: `pathrules::first_noexec_violation_bytes`, whose
+/// soundness Verus proves for paths of any length, on the paths' bytes. A profile is
+/// enforceable as written exactly when no grant strictly contains a `noexec` tree: then every
 /// grant covering a path beneath the tree lies at or beneath it, and `may_exec` drops its
 /// execute right.
 pub fn first_noexec_violation(grants: &[&Path], noexec: &[&Path]) -> Option<NoexecViolation> {
-    for (ni, n) in noexec.iter().enumerate() {
-        for (gi, g) in grants.iter().enumerate() {
-            if within(n, g) && !within(g, n) {
-                return Some(NoexecViolation {
-                    noexec: ni,
-                    grant: gi,
-                });
-            }
-        }
-    }
-    None
+    crate::pathrules::first_noexec_violation_bytes(&bytes(grants), &bytes(noexec))
+        .map(|(noexec, grant)| NoexecViolation { noexec, grant })
 }
 
 /// What the backend enforces for one profile on one kernel.
@@ -351,70 +349,37 @@ pub struct PathView<'a> {
     pub resolved: &'a Path,
 }
 
-/// Which carve-out rule a profile breaks: the rule, and the deny and grant entries by index
-/// (`write_grant` says which grant list `grant` indexes).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Violation {
-    pub deny_inside_grant: bool,
-    pub deny_write: bool,
-    pub deny: usize,
-    pub write_grant: bool,
-    pub grant: usize,
-}
+pub use crate::pathrules::Violation;
 
-/// The carve-out rules on resolved paths, separate from the filesystem and allocation-free so
-/// the Kani proof covers them. Landlock only grants, so a profile is enforceable as written
-/// exactly when no granted tree covers a denied path, and no grant reaches into a denied tree
-/// except a read the profile stated inside a deny_read (one public key in a secrets directory).
+/// The carve-out rules on resolved paths: `pathrules::first_carve_violation_bytes`, whose
+/// soundness Verus proves for paths of any length, on the paths' bytes. Landlock only grants,
+/// so a profile is enforceable as written exactly when no granted tree covers a denied path,
+/// and no grant reaches into a denied tree except a read the profile stated inside a deny_read
+/// (one public key in a secrets directory).
 pub fn first_carve_violation(
     read: &[PathView],
     write: &[PathView],
     deny_read: &[PathView],
     deny_write: &[PathView],
 ) -> Option<Violation> {
-    for (di, d) in deny_read.iter().enumerate() {
-        let grants = read
+    use crate::pathrules::{Entry, first_carve_violation_bytes};
+    use std::os::unix::ffi::OsStrExt;
+    fn entries<'a>(views: &[PathView<'a>]) -> Vec<Entry<'a>> {
+        views
             .iter()
-            .map(|g| (false, g))
-            .chain(write.iter().map(|g| (true, g)));
-        for (gi, (write_grant, g)) in grants.enumerate() {
-            let grant = if write_grant { gi - read.len() } else { gi };
-            let v = |deny_inside_grant| Violation {
-                deny_inside_grant,
-                deny_write: false,
-                deny: di,
-                write_grant,
-                grant,
-            };
-            if within(d.resolved, g.resolved) {
-                return Some(v(true));
-            }
-            let stated = g.field.starts_with("read")
-                && within(g.stated, d.stated)
-                && !within(d.stated, g.stated);
-            if within(g.resolved, d.resolved) && !stated {
-                return Some(v(false));
-            }
-        }
+            .map(|v| Entry {
+                is_read: v.field.starts_with("read"),
+                stated: v.stated.as_os_str().as_bytes(),
+                resolved: v.resolved.as_os_str().as_bytes(),
+            })
+            .collect()
     }
-    for (di, d) in deny_write.iter().enumerate() {
-        for (gi, g) in write.iter().enumerate() {
-            let v = |deny_inside_grant| Violation {
-                deny_inside_grant,
-                deny_write: true,
-                deny: di,
-                write_grant: true,
-                grant: gi,
-            };
-            if within(d.resolved, g.resolved) {
-                return Some(v(true));
-            }
-            if within(g.resolved, d.resolved) {
-                return Some(v(false));
-            }
-        }
-    }
-    None
+    first_carve_violation_bytes(
+        &entries(read),
+        &entries(write),
+        &entries(deny_read),
+        &entries(deny_write),
+    )
 }
 
 /// `first_carve_violation` over owned grants and denied paths, as a refusal naming the paths.
