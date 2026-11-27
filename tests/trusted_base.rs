@@ -77,7 +77,8 @@ fn blank(src: &str) -> String {
                 if i >= b.len() {
                     break;
                 }
-                if b[i] == b'"' && b[i + 1..].iter().take(hashes).all(|&h| h == b'#')
+                if b[i] == b'"'
+                    && b[i + 1..].iter().take(hashes).all(|&h| h == b'#')
                     && b.len() >= i + 1 + hashes
                 {
                     out.resize(out.len() + 1 + hashes, b' ');
@@ -234,8 +235,10 @@ fn dependencies() -> Vec<String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = Command::new(cargo)
         .current_dir(root())
-        .args(["tree", "-e", "normal", "--target", "all", "--prefix", "none"])
-        .args(["--format", "{p}", "--locked"])
+        .args([
+            "tree", "-e", "normal", "--target", "all", "--prefix", "none",
+        ])
+        .args(["--format", "{p}", "--locked", "--color", "never"])
         .output()
         .expect("run cargo tree");
     assert!(
@@ -257,7 +260,10 @@ fn dependencies() -> Vec<String> {
 fn render() -> String {
     let mut files = Vec::new();
     rust_files(&root().join("src"), &mut files);
-    assert!(!files.is_empty(), "read no source file: an empty scan is not an empty trusted base");
+    assert!(
+        !files.is_empty(),
+        "read no source file: an empty scan is not an empty trusted base"
+    );
     let mut rows: BTreeMap<String, Counts> = BTreeMap::new();
     let mut total = Counts::default();
     for f in &files {
@@ -274,7 +280,11 @@ fn render() -> String {
         ] {
             *sum += v;
         }
-        let rel = f.strip_prefix(root()).unwrap().to_string_lossy().replace('\\', "/");
+        let rel = f
+            .strip_prefix(root())
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
         rows.insert(rel, c);
     }
     let deps = dependencies();
@@ -359,7 +369,10 @@ fn unsafe_code_is_allowed_only_in_the_two_system_modules() {
         .collect();
     assert_eq!(with_allow, ["linux.rs", "macos.rs"]);
     let lib = std::fs::read_to_string(root().join("src/lib.rs")).unwrap();
-    assert!(blank(&lib).contains("#![deny(unsafe_code)]"), "lib.rs must deny unsafe code");
+    assert!(
+        blank(&lib).contains("#![deny(unsafe_code)]"),
+        "lib.rs must deny unsafe code"
+    );
 }
 
 // The counters themselves: each one must count code and ignore comments and strings.
