@@ -3,6 +3,9 @@ artifacts:
     type: requirement
     title: "zwinger fails closed: it never starts a session unconfined"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-1
     description: >
       A missing, unreadable or malformed profile, an unknown or duplicate key, an empty or null name, a relative or
       '..' path, a contradictory pair of path entries, a host that is not an exact name, a
@@ -16,6 +19,9 @@ artifacts:
     type: requirement
     title: "One typed per-session profile drives every platform"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-13
     description: >
       A YAML profile, read by rivet-yaml (name, read, write, deny_read, deny_write, network.allow,
       network.allow_local_binding, mach_lookup) with unknown or duplicate keys and wrong types rejected and
@@ -39,6 +45,13 @@ artifacts:
     type: requirement
     title: "Linux: the filesystem part of the profile is enforced through Landlock"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-2
+      - type: constraint-satisfies
+        target: SC-ZW-3
+      - type: constraint-satisfies
+        target: SC-ZW-4
     description: >
       zwinger run on Linux restricts itself with a Landlock ruleset (read trees: read and
       execute; write trees: every filesystem right) and then execs the session, so the session and
@@ -50,6 +63,9 @@ artifacts:
     type: requirement
     title: "Linux: no egress, and network allowances Landlock cannot express are refused"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-5
     description: >
       network.mode = "none" (the default) means no egress: a seccomp filter fails socket(2) with
       EACCES for every family except AF_UNIX and fails io_uring with EPERM; where the ABI has them, Landlock
@@ -62,6 +78,11 @@ artifacts:
     type: requirement
     title: "Linux: UNIX sockets and the inherited terminal cannot reach outside the session"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-5
+      - type: constraint-satisfies
+        target: SC-ZW-8
     description: >
       socket(AF_UNIX) is allowed only when Landlock confines where it can connect: pathname
       sockets through ResolveUnix (ABI 9) granted on write trees only, abstract sockets and
@@ -82,6 +103,11 @@ artifacts:
     type: requirement
     title: "A backend refuses a profile it cannot enforce as written"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-1
+      - type: constraint-satisfies
+        target: SC-ZW-2
     description: >
       On Linux: a granted (read or write) path that does not exist, a deny_read inside a granted
       tree or a deny_write inside a write tree (Landlock cannot carve a subtree out of a granted
@@ -93,6 +119,11 @@ artifacts:
     type: requirement
     title: "Allowances the backend cannot confine are stated explicitly and named at startup"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-5
+      - type: constraint-satisfies
+        target: SC-ZW-8
     description: >
       network.mode = "unfiltered" allows every socket family but AF_UNIX and sets no network
       rules; network.unix_sockets = "unfiltered" allows socket(AF_UNIX) on every ABI and drops
@@ -105,6 +136,9 @@ artifacts:
     type: requirement
     title: "A denial can be traced to the profile"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-19
     description: >
       zwinger run writes one startup line to stderr naming the profile, the Landlock ABI
       applied, the grant counts, skipped optional paths, the network and UNIX-socket modes,
@@ -140,6 +174,9 @@ artifacts:
     type: requirement
     title: "Execution can be refused in trees the session may read or write"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-3
     description: >
       A profile's noexec list names trees nothing may be executed from (a scratch or download
       directory), so a session cannot write a program and then run it there. On Linux every
@@ -156,6 +193,9 @@ artifacts:
     type: requirement
     title: "Each run reports its confinement to warte, without paths"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-6
     description: >
       Every zwinger run writes one versioned event (schema zwinger.event.v1) for warte's probe.
       It carries the profile name and sha256, the verdict, a refusal category (profile, path,
@@ -615,6 +655,8 @@ artifacts:
       telemetry gap changes (a lost event reaching warte unflagged), or when the Pi's event
       stream has no WCTT bound or one above 1 ms.
     links:
+      - type: constraint-satisfies
+        target: SC-ZW-10
       - type: refines
         target: REQ-ZW-008
       - type: refines
@@ -624,6 +666,9 @@ artifacts:
     type: requirement
     title: "A profile's network peers are generated from the architecture model"
     status: draft
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-10
     description: >
       A converter outside the zwinger binary reads spar's instance of a deployment and emits,
       per node, a YAML fragment with the peers that node's sessions connect to. A profile takes
@@ -793,6 +838,9 @@ artifacts:
     type: requirement
     title: "zwinger states its trusted base, computed from the source, and unsafe code stays in two modules"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-13
     description: >
       docs/trusted-base.md says what zwinger trusts and what it treats as hostile, and carries an
       inventory rendered from the source and the dependency tree: unsafe, extern "C" and
@@ -804,6 +852,9 @@ artifacts:
     type: requirement
     title: "An agent's shell commands run in a WASM capability shell; native tools only from an allowlist"
     status: draft
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-11
     description: >
       Under zwinger, the agent's shell is a capability shell grown from
       bazel-file-ops-component, now pulseengine/kapsel. Common commands run as WASI components that see only the
@@ -917,6 +968,11 @@ artifacts:
     type: requirement
     title: "The confined command receives its plan in ZWINGER_GRANTS"
     status: approved
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-11
+      - type: constraint-satisfies
+        target: SC-ZW-15
     description: >
       Every command zwinger runs gets ZWINGER_GRANTS, JSON with schema zwinger.grants.v1: the
       resolved read and write grants, deny_read, deny_write and noexec, and exec (empty until
@@ -995,6 +1051,9 @@ artifacts:
       stated and as resolved, and when the profile file has more than one hard link. Both are
       read again by the next run with the operator's full authority, so the session must not be
       able to change them.
+    links:
+      - type: constraint-satisfies
+        target: SC-ZW-9
 
   - id: VER-ZW-012
     type: verification
