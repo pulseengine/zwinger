@@ -685,3 +685,35 @@ fn no_event_is_written_where_the_session_could_forge_it() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("lies inside the write grant"), "{err}");
 }
+
+// rivet: verifies REQ-ZW-021
+#[test]
+fn the_session_receives_its_plan_in_zwinger_grants() {
+    let sc = Scene::new("deny_read: [\"@/o/secret\"]\nnoexec: [\"@/w\"]\n");
+    let o = sc.run(&["/usr/bin/printenv", zwinger::grants::VAR]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("ZWINGER_GRANTS is JSON");
+    assert_eq!(v["schema"], zwinger::grants::SCHEMA);
+    let has = |key: &str, p: PathBuf| {
+        let p = p.canonicalize().unwrap();
+        let list = v[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is a list"));
+        assert!(
+            list.iter().any(|e| e.as_str() == p.to_str()),
+            "{key} lacks {}: {v}",
+            p.display()
+        );
+    };
+    has("read", sc.path("r"));
+    has("write", sc.path("w"));
+    has("deny_read", sc.path("o/secret"));
+    has("noexec", sc.path("w"));
+    assert_eq!(v["exec"], serde_json::json!([]));
+    // Every path in the plan is absolute.
+    for key in ["read", "write", "deny_read", "deny_write", "noexec"] {
+        for e in v[key].as_array().unwrap() {
+            assert!(e.as_str().unwrap().starts_with('/'), "{key}: {e}");
+        }
+    }
+}
