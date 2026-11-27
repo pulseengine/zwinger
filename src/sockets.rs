@@ -25,14 +25,23 @@ pub fn session_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
     bases.push(std::env::temp_dir());
     bases.push(PathBuf::from("/tmp"));
     bases.push(PathBuf::from("/var/tmp"));
-    let outside = |b: &PathBuf| match b.canonicalize() {
-        Ok(r) => !write_grants.iter().any(|g| crate::profile::within(&r, g)),
-        Err(_) => false,
-    };
+    let granted = |p: &std::path::Path| write_grants.iter().any(|g| crate::profile::within(p, g));
     let mut failures = Vec::new();
-    for base in bases.into_iter().filter(outside) {
+    // Each base by its resolved path, and the directory created there checked again, so a
+    // symlink swapped in between cannot place it inside a grant.
+    for base in bases.iter().filter_map(|b| b.canonicalize().ok()) {
+        if granted(&base) {
+            continue;
+        }
         match create_in(&base) {
-            Ok(d) => return Ok(d),
+            Ok(d) if !granted(&d) => return Ok(d),
+            Ok(d) => {
+                let _ = std::fs::remove_dir(&d);
+                failures.push(format!(
+                    "socket directory {} resolved inside a write grant; refusing",
+                    d.display()
+                ));
+            }
             Err(e) => failures.push(e),
         }
     }
