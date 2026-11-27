@@ -79,7 +79,7 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
     let ev = Event::confined(
         p.name.clone(),
         sha,
-        enf.abi,
+        Some(enf.abi),
         network,
         enf.not_enforced().into_iter().map(String::from).collect(),
         plan.read.len(),
@@ -102,7 +102,7 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn run(_: &Profile, _: &Path, _: &str, _: &[String]) -> ExitCode {
     // Fail closed: never run a command unconfined because no backend exists yet.
     refuse("no enforcement backend on this platform yet; refusing to run unconfined")
@@ -127,7 +127,7 @@ fn check(p: &Profile) -> ExitCode {
 }
 
 /// Without a backend only the profile itself can be checked; say that paths were not.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn check(p: &Profile) -> ExitCode {
     println!(
         "zwinger: profile {} ok: {} readable, {} writable, {} read-denied, {} write-denied, \
@@ -141,6 +141,74 @@ fn check(p: &Profile) -> ExitCode {
         p.mach_lookup.len()
     );
     ExitCode::SUCCESS
+}
+
+/// macOS (Seatbelt prototype): apply the policy, then exec, as on Linux.
+#[cfg(target_os = "macos")]
+fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
+    use std::os::unix::process::CommandExt;
+    use zwinger::profile::NetworkMode;
+    // As on Linux: open the event file and hash the profile before confining.
+    let grants: Vec<std::path::PathBuf> = p
+        .writes()
+        .filter_map(|(_, w)| w.canonicalize().ok())
+        .collect();
+    let pending = events::begin(&grants);
+    let sha = events::sha256_file(path);
+    let plan = match zwinger::macos::confine(p) {
+        Ok(plan) => plan,
+        Err(e) => {
+            let ev = Event::refused(Some(p.name.clone()), sha, events::category(&e));
+            events::end(pending, &ev);
+            return refuse(&e);
+        }
+    };
+    let network = match p.network.mode {
+        NetworkMode::None => "none",
+        NetworkMode::Unfiltered => "unfiltered",
+    };
+    let ev = Event::confined(
+        p.name.clone(),
+        sha,
+        None,
+        network,
+        zwinger::macos::not_enforced(p)
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        plan.read.len(),
+        plan.write.len(),
+        plan.skipped.len(),
+    );
+    events::end(pending, &ev);
+    eprintln!("{}", zwinger::macos::summary(p, &plan));
+    // Only returns on failure; the session is already confined either way.
+    let err = std::process::Command::new(cmd)
+        .args(args)
+        .env("ZWINGER_PROFILE", &p.name)
+        .exec();
+    eprintln!("zwinger: cannot exec {cmd}: {err}");
+    ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {
+        127
+    } else {
+        126
+    })
+}
+
+/// `check` on macOS is `run` without `sandbox_init` or exec: the same plan and policy.
+#[cfg(target_os = "macos")]
+fn check(p: &Profile) -> ExitCode {
+    match zwinger::macos::preflight(p) {
+        Ok((plan, _)) => {
+            println!("zwinger: profile {} ok", p.name);
+            println!(
+                "{}",
+                zwinger::macos::summary(p, &plan).replacen(" confined:", " would be confined:", 1)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => refuse(&e),
+    }
 }
 
 fn refuse(why: &str) -> ExitCode {
