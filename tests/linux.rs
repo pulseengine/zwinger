@@ -295,6 +295,8 @@ fn probe_entry() {
                 let mut params = [0u8; 120];
                 libc::syscall(libc::SYS_io_uring_setup, 1u32, params.as_mut_ptr()) as i32
             }
+            // KEYCTL_GET_KEYRING_ID (0) of the session keyring (-3), creating it if needed.
+            "keyctl" => libc::syscall(libc::SYS_keyctl, 0i64, -3i64, 1i64) as i32,
             "unix_connect" => {
                 let r = std::os::unix::net::UnixStream::connect(&arg);
                 std::process::exit(
@@ -784,4 +786,19 @@ fn code_injecting_variables_are_removed_unless_kept() {
         !removed.contains("GIT_SSH_COMMAND"),
         "kept by env_keep: {err}"
     );
+}
+
+// rivet: verifies REQ-ZW-025
+#[test]
+fn kernel_keyring_syscalls_are_refused() {
+    // Control: the same call succeeds unconfined, so a refusal is the filter's.
+    let control = probe_unconfined("keyctl", "");
+    assert_eq!(
+        control.status.code(),
+        Some(0),
+        "keyctl must work unconfined for this test to mean anything: {}",
+        String::from_utf8_lossy(&control.stderr)
+    );
+    let sc = Scene::new("");
+    assert_eq!(probe(&sc, "keyctl", "").status.code(), Some(libc::EPERM));
 }

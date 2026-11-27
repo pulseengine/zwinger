@@ -590,6 +590,9 @@ pub struct Arch {
     pub socket: u32,
     pub ioctl: u32,
     pub io_uring: [u32; 3],
+    /// add_key, request_key and keyctl: the kernel keyrings, which hold secrets no path rule
+    /// covers (REQ-ZW-025).
+    pub keyrings: [u32; 3],
     /// Syscall numbers at or above this belong to a second ABI on the same audit arch (x32).
     pub foreign_from: Option<u32>,
 }
@@ -599,6 +602,7 @@ pub const X86_64: Arch = Arch {
     socket: 41,
     ioctl: 16,
     io_uring: [425, 426, 427],
+    keyrings: [248, 249, 250],
     foreign_from: Some(0x4000_0000),
 };
 
@@ -607,6 +611,7 @@ pub const AARCH64: Arch = Arch {
     socket: 198,
     ioctl: 29,
     io_uring: [425, 426, 427],
+    keyrings: [217, 218, 219],
     foreign_from: None,
 };
 
@@ -617,6 +622,7 @@ pub const RISCV64: Arch = Arch {
     socket: 198,
     ioctl: 29,
     io_uring: [425, 426, 427],
+    keyrings: [217, 218, 219],
     foreign_from: None,
 };
 
@@ -634,7 +640,7 @@ pub fn native_arch() -> Option<Arch> {
 }
 
 /// Upper bound on the program length (x86_64 with AF_UNIX allowed and the network refused).
-pub const MAX_PROGRAM: usize = 20;
+pub const MAX_PROGRAM: usize = 23;
 
 /// A seccomp program in a fixed array, so building it allocates nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -678,22 +684,24 @@ const fn ret(k: u32) -> Insn {
     }
 }
 
-/// The seccomp program: kill a foreign architecture, refuse x32, io_uring and the terminal
-/// ioctls TIOCSTI and TIOCLINUX with EPERM. `socket(2)` with family `AF_UNIX` is allowed when
+/// The seccomp program: kill a foreign architecture, refuse x32, io_uring, the kernel keyring
+/// syscalls and the terminal ioctls TIOCSTI and TIOCLINUX with EPERM. `socket(2)` with family `AF_UNIX` is allowed when
 /// `unix_sockets` holds, any other family when `inet_sockets` holds; the rest fail with EACCES.
 ///
 /// Layout, block by block (jumps only go forward, so every target is computed from it):
 ///
 /// ```text
 /// head    ld arch; jeq ARCH +1; ret KILL; ld nr
-/// checks  [jge X32 -> deny]; jeq socket -> sock; jeq ioctl -> ioctl; jeq io_uring x3 -> deny
+/// checks  [jge X32 -> deny]; jeq socket -> sock; jeq ioctl -> ioctl; jeq io_uring x3 -> deny;
+///         jeq keyrings x3 -> deny
 /// allow   ret ALLOW
 /// sock    one ret (both or neither family allowed), or ld arg0; jeq AF_UNIX +1; ret; ret
 /// ioctl   ld arg1; jeq TIOCSTI -> deny; jeq TIOCLINUX -> deny; ret ALLOW
 /// deny    ret EPERM
 /// ```
 pub fn seccomp_program(arch: Arch, unix_sockets: bool, inet_sockets: bool) -> Program {
-    let n_checks = usize::from(arch.foreign_from.is_some()) + 2 + arch.io_uring.len();
+    let n_checks =
+        usize::from(arch.foreign_from.is_some()) + 2 + arch.io_uring.len() + arch.keyrings.len();
     let first_check = 4;
     let allow_at = first_check + n_checks;
     let sock_at = allow_at + 1;
@@ -726,6 +734,9 @@ pub fn seccomp_program(arch: Arch, unix_sockets: bool, inet_sockets: bool) -> Pr
     p.push(jump(BPF_JEQ_K, arch.socket, p.len, sock_at));
     p.push(jump(BPF_JEQ_K, arch.ioctl, p.len, ioctl_at));
     for nr in arch.io_uring {
+        p.push(jump(BPF_JEQ_K, nr, p.len, deny_at));
+    }
+    for nr in arch.keyrings {
         p.push(jump(BPF_JEQ_K, nr, p.len, deny_at));
     }
     p.push(ret(RET_ALLOW));
@@ -798,6 +809,7 @@ pub(crate) fn bpf_run(prog: &[Insn], arch: u32, nr: u32, arg0: u32, arg1: u32) -
 /// - a foreign audit architecture is killed;
 /// - a second syscall ABI on the same architecture (x32) fails with EPERM;
 /// - io_uring_setup, io_uring_enter and io_uring_register fail with EPERM;
+/// - add_key, request_key and keyctl fail with EPERM;
 /// - ioctl with request TIOCSTI or TIOCLINUX (low 32 bits) fails with EPERM, any fd;
 /// - socket(AF_UNIX, ..) is allowed iff `unix_sockets`, any other family iff `inet_sockets`,
 ///   otherwise it fails with EACCES;
@@ -817,6 +829,9 @@ pub(crate) fn seccomp_spec(
         return RET_KILL_PROCESS;
     }
     if arch.foreign_from.is_some_and(|from| nr >= from) {
+        return RET_ERRNO | EPERM;
+    }
+    if arch.keyrings.contains(&nr) {
         return RET_ERRNO | EPERM;
     }
     if arch.io_uring.contains(&nr) {
@@ -1720,6 +1735,11 @@ mod tests {
                 0,
                 arch.socket,
                 arch.ioctl,
+                arch.keyrings[0],
+                arch.keyrings[1],
+                arch.keyrings[2],
+                arch.keyrings[0] - 1,
+                arch.keyrings[2] + 1,
                 424,
                 425,
                 426,
@@ -1749,6 +1769,9 @@ mod tests {
             assert_eq!(r(arch.socket, AF_UNIX), unix_expect);
             for nr in arch.io_uring {
                 assert_eq!(r(nr, 0), RET_ERRNO | EPERM, "io_uring {nr}");
+            }
+            for nr in arch.keyrings {
+                assert_eq!(r(nr, 0), RET_ERRNO | EPERM, "keyring syscall {nr}");
             }
             for nr in [0, 1, 59, 221, 424, 428] {
                 assert_eq!(r(nr, AF_INET), RET_ALLOW, "nr {nr}");
@@ -1813,6 +1836,14 @@ mod tests {
                 libc::SYS_io_uring_register as u32
             ]
         );
+        assert_eq!(
+            arch.keyrings,
+            [
+                libc::SYS_add_key as u32,
+                libc::SYS_request_key as u32,
+                libc::SYS_keyctl as u32
+            ]
+        );
         assert_eq!(TIOCSTI, libc::TIOCSTI as u32);
         assert_eq!(TIOCLINUX, libc::TIOCLINUX as u32);
         assert_eq!(AF_UNIX, libc::AF_UNIX as u32);
@@ -1843,8 +1874,8 @@ mod tests {
 mod proofs {
     use super::*;
 
-    // Unwind bound 30: the longest program (x86_64, AF_UNIX allowed, network refused) is 20
-    // instructions and the builder walks at most 26 ops. Kani fails if a loop needs more.
+    // Unwind bound 30: the longest program (x86_64, AF_UNIX allowed, network refused) is 23
+    // instructions and the builder walks at most 29 ops. Kani fails if a loop needs more.
 
     /// Structure (every instruction in the emitted subset, every jump inside the program, a `ret`
     /// last), then the spec for every (audit_arch, nr, arg0, arg1). One harness per architecture
@@ -1992,6 +2023,14 @@ mod proofs {
     #[kani::should_panic]
     fn planted_io_uring_register_not_refused() {
         planted(|p| set_jeq(p, BPF_JEQ_K, 427, 0xffff_ffff));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    #[kani::should_panic]
+    fn planted_keyctl_not_refused() {
+        // x86_64 keyctl is 250 (planted() builds the x86_64 program).
+        planted(|p| set_jeq(p, BPF_JEQ_K, 250, 0xffff_ffff));
     }
 
     #[kani::proof]

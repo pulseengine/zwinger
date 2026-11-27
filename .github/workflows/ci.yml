@@ -345,7 +345,7 @@ jobs:
   kani:
     # Machine-checked proofs (src/linux.rs, mod proofs): the seccomp program equals its spec for
     # every syscall input on x86_64, aarch64 and riscv64 in all four socket modes; the program is well
-    # formed; enforcement() never opens a channel the profile did not state; twelve planted bugs
+    # formed; enforcement() never opens a channel the profile did not state; thirteen planted bugs
     # must each be rejected (should_panic), or the job fails. Hosted runner: the action installs
     # Kani and CBMC.
     name: Kani proofs
@@ -371,7 +371,7 @@ jobs:
           [[ "$v" == "Kani Rust Verifier $KANI_VERSION "* ]]
 
       # Every harness, then the summary: zero failures, and at least as many harnesses as exist
-      # today (31), so a deleted or cfg-ed out harness is a red job, not a quieter green one.
+      # today (32), so a deleted or cfg-ed out harness is a red job, not a quieter green one.
       - name: Kani (every harness)
         run: |
           set -o pipefail
@@ -382,7 +382,7 @@ jobs:
           summary="$(grep -E "^Complete - [0-9]+ successfully verified harnesses, 0 failures, [0-9]+ total\.$" kani.log)"
           echo "$summary"
           total="$(echo "$summary" | sed -E 's/.* ([0-9]+) total\./\1/')"
-          test "$total" -ge 31
+          test "$total" -ge 32
 
   riscv64:
     # riscv64 (zwinger#23): the crate builds and lints for the target, and the library tests run

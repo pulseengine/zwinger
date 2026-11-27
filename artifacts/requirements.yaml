@@ -1178,3 +1178,44 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-026
+
+  - id: REQ-ZW-025
+    type: requirement
+    title: "Linux: the session cannot use the kernel keyrings"
+    status: approved
+    description: >
+      add_key, request_key and keyctl fail with EPERM in every network and socket mode, on
+      every supported architecture. The kernel keyrings hold credentials no path rule covers.
+
+  - id: DD-ZW-023
+    type: design-decision
+    title: "The keyring syscalls are refused by the seccomp filter, like io_uring"
+    status: approved
+    description: >
+      Found in the STPA-Sec review, 2026-11-27; shipped as a security fix.
+    decision: >
+      Each architecture's table carries the three keyring syscall numbers (checked against libc
+      for the target), the program refuses them with EPERM, and the specification seccomp_spec
+      says so, so Kani proves the filter on x86_64, aarch64 and riscv64. A planted-bug control
+      (keyctl not refused) must fail.
+    rationale: >
+      Landlock has no keyring right. Refusing in the filter needs no new kernel feature and is
+      covered by the existing proof machinery; agents have no common need for the keyrings.
+    links:
+      - type: satisfies
+        target: REQ-ZW-025
+
+  - id: VER-ZW-013
+    type: verification
+    title: "Keyring syscalls refused: proof, unit tests, end to end"
+    status: implemented
+    method: test
+    description: >
+      Kani: the filter equals seccomp_spec (which refuses the keyring syscalls) on three
+      architectures in every socket mode, and planted_keyctl_not_refused must fail. Unit tests:
+      every_case checks the keyring numbers and their neighbours; the_native_table_matches_libc
+      checks the numbers against libc. tests/linux.rs kernel_keyring_syscalls_are_refused: keyctl
+      fails with EPERM under zwinger and succeeds unconfined.
+    links:
+      - type: verifies
+        target: REQ-ZW-025
