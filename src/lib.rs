@@ -6,6 +6,11 @@
 //! an Endpoint Security descendants client (`bridge/`). Elsewhere `run` refuses.
 //!
 //! `events` writes one confinement event per `run` for warte's probe (REQ-ZW-014).
+//!
+//! Unsafe code is denied crate-wide and allowed only in `linux::sys` and `macos::enforce`, the
+//! trusted base listed in docs/trusted-base.md.
+
+#![deny(unsafe_code)]
 
 pub mod events;
 pub mod linux;

@@ -55,7 +55,7 @@ The demo grants only system directories. A real agent also needs its own binary,
 
 - [Profiles and commands](docs/profile.md)
 - [Linux backend](docs/linux.md) and [macOS prototype](docs/macos.md)
-- [Proofs](docs/proofs.md)
+- [Proofs](docs/proofs.md) and the [trusted base](docs/trusted-base.md)
 - [Architecture model](docs/architecture.md)
 - [Reporting to warte](docs/telemetry.md)
 - [Verifying a release](docs/releases.md)

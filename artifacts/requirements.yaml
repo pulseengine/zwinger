@@ -782,3 +782,126 @@ artifacts:
         target: REQ-ZW-016
       - type: verifies
         target: REQ-ZW-018
+
+  - id: REQ-ZW-019
+    type: requirement
+    title: "zwinger states its trusted base, computed from the source, and unsafe code stays in two modules"
+    status: approved
+    description: >
+      docs/trusted-base.md says what zwinger trusts and what it treats as hostile, and carries an
+      inventory rendered from the source and the dependency tree: unsafe, extern "C" and
+      allow(unsafe_code) sites, Verus and Kani trust units per file, and every crate compiled
+      into zwinger. A test fails when the page differs from the source. The crate denies unsafe
+      code; only linux::sys and macos::enforce allow it.
+
+  - id: REQ-ZW-020
+    type: requirement
+    title: "An agent's shell commands run in a WASM capability shell; native tools only from an allowlist"
+    status: draft
+    description: >
+      Under zwinger, the agent's shell is a capability shell grown from
+      bazel-file-ops-component. Common commands run as WASI components that see only the
+      directories zwinger grants, on wasmtime and kiln side by side. Native tools run only from
+      an allowlist, still under the kernel sandbox. Shell syntax outside the supported subset is
+      refused, never handed to bash or zsh. zwinger's side: a profile field naming the shell
+      and the native allowlist, and Execute granted on exactly those files.
+
+  - id: DD-ZW-016
+    type: design-decision
+    title: "The trusted base is computed and gated, as in gale"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over applying it to the WASM shell only or later.
+    decision: >
+      tests/trusted_base.rs renders the inventory into docs/trusted-base.md between markers and
+      fails when the page differs by a character; ZWINGER_WRITE_TRUSTED_BASE=1 rewrites it after
+      review. src/lib.rs denies unsafe code, and the three Linux syscalls zwinger makes directly
+      (close_range, seccomp, the Landlock ABI query) moved into linux::sys, so unsafe code sits
+      only there and in macos::enforce. A test requires that exactly those two files allow it.
+    rationale: >
+      gale found its stated trusted base 9 units behind its source (gale#467); a figure that is
+      typed drifts, a figure that is rendered cannot. The compiler holds the unsafe boundary;
+      the inventory makes its size and the dependency closure visible in review.
+    links:
+      - type: satisfies
+        target: REQ-ZW-019
+
+  - id: DD-ZW-017
+    type: design-decision
+    title: "Agent commands go through a WASM capability shell, with native tools from an allowlist"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over WASM tools beside bash and a tighter native-only setup.
+    decision: >
+      The shell has its own WIT (a command interface: args, env, streams, exit code), its tools
+      are composed into it with wac, and native execution is a narrow host import zwinger
+      provides, outside the shell's own authority. The parser is a POSIX subset written in
+      Rust, so refusing everything outside it is a testable property. Advice from the
+      bazel-file-ops-component session, 2026-11-27.
+    rationale: >
+      A WASM component can reach only what it is handed, on every platform, which a kernel
+      sandbox gives only per OS and with each OS's gaps. Refusing unsupported syntax keeps the
+      shell fail-closed, as zwinger is. Native toolchains (git, cargo, bazel) cannot run as
+      components yet, so they stay native under the kernel sandbox, but only from a list.
+    links:
+      - type: satisfies
+        target: REQ-ZW-020
+
+  - id: DD-ZW-018
+    type: design-decision
+    title: "The shell's components run on wasmtime and kiln differentially from the start"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over wasmtime first and kiln only.
+    decision: >
+      Every command runs on both runtimes with the same argv, environment and preopened tree,
+      and stdout, stderr, exit status and the resulting tree are compared. kiln runs the
+      meld-fused form of the same build, so the meld version is pinned as part of the kiln leg.
+      The shell repository publishes the corpus as a versioned release asset with a sha256;
+      kiln consumes it. A divergence in how an error is reported counts as a failure, not as
+      unsupported.
+    rationale: >
+      kiln main already matches wasmtime 50.0.1 on the nine filesystem calls the shell needs
+      (measured by the kiln session, 2026-11-27); its known gaps are in error reporting (SR-106).
+      Two runtimes with different code bases disagree where one is wrong, and the corpus gives
+      kiln a real-world WASI filesystem test set.
+    links:
+      - type: satisfies
+        target: REQ-ZW-020
+
+  - id: DD-ZW-019
+    type: design-decision
+    title: "bazel-file-ops-component grows into the shell; the rename follows its pending fix release"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27, over a new repository and building the shell into zwinger.
+    decision: >
+      The shell is developed in bazel-file-ops-component, which owns its design issue and the
+      seam with zwinger. Its current TinyGo component and JSON CLI stay the shipped artifact
+      until a Rust replacement passes an equivalence test with the existing JSON configs as the
+      oracle. The repository is renamed only after its pending 0.2.1 release, so consumers do
+      not move name and take a fix in one step. "wash" is taken by wasmCloud; the owner picks
+      the name.
+    rationale: >
+      Keeping the shell out of zwinger keeps an interpreter out of zwinger's trusted base
+      (docs/trusted-base.md). Growing the existing repository reuses its components, tests and release
+      pipeline rather than starting a new one.
+    links:
+      - type: satisfies
+        target: REQ-ZW-020
+
+  - id: VER-ZW-008
+    type: verification
+    title: "The trusted-base inventory equals the source, and unsafe code is confined"
+    status: implemented
+    method: test
+    description: >
+      tests/trusted_base.rs, run by cargo test in the Linux and macOS jobs. It re-renders the
+      inventory and requires docs/trusted-base.md to match character for character, requires
+      allow(unsafe_code) in exactly src/linux.rs and src/macos.rs and deny(unsafe_code) in
+      src/lib.rs, and tests its own counters on code, comments and strings. A planted wrong count
+      in the page and a planted unsafe block outside the two modules each failed (the second at
+      compile time).
+    links:
+      - type: verifies
+        target: REQ-ZW-019

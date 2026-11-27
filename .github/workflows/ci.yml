@@ -206,9 +206,10 @@ jobs:
       - name: Links have their inverses
         run: rivet check bidirectional
 
-      # Requirement verification is 15 of 18 (2026-11-27): REQ-ZW-003 (the Endpoint Security
+      # Requirement verification is 16 of 20 (2026-11-27): REQ-ZW-003 (the Endpoint Security
       # client) waits for the VM, and its Seatbelt stepping stone is REQ-ZW-015; REQ-ZW-007 (Pi
-      # kernel) has no verification yet; REQ-ZW-017 (generated peers) waits for zwinger#14.
+      # kernel) has no verification yet; REQ-ZW-017 (generated peers) waits for zwinger#14 and
+      # spar 0.50; REQ-ZW-020 (WASM shell) is design only.
       # Raise this as they land.
       - name: Requirement verification coverage
         run: rivet coverage --fail-under 93 --strict-empty
