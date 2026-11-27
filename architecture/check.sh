@@ -7,6 +7,9 @@
 #   3. telemetry (DD-ZW-013): a lost event still reaches warte unflagged. This is a known gap
 #      pinned on purpose: closing it flips this check, and the decision must be updated with it;
 #   4. timing (DD-ZW-014): the Pi's event stream has a WCTT bound, at most WCTT_BUDGET_PS.
+#   5. lifecycle (REQ-ZW-018): spar modes finds no dead transition, refused and exited are
+#      terminal, and confined is entered only from preflight;
+#   6. both roots instantiate with the expected number of components.
 #
 # Usage: architecture/check.sh [DIR]   (DIR holds zwinger.aadl and reference_mesh.aadl)
 # Needs spar and jq on PATH.
@@ -35,6 +38,13 @@ for pair in "node:$node" "mesh:$mesh"; do
   errs="$(jq '[.diagnostics[] | select(.severity == "error")] | length' <<<"$json")"
   # Zero diagnostics means spar analysed nothing, not that the model is clean.
   if [ "$n" -eq 0 ]; then echo "FAIL $name: spar returned no diagnostics at all"; fail=1; fi
+  comps="$(jq '[.instance | .. | objects | select(has("category"))] | length' <<<"$json")"
+  want=7; [ "$name" = mesh ] && want=19   # 2 nodes x 7, warte, 2 NICs, LAN, root
+  if [ "$comps" -ne "$want" ]; then
+    echo "FAIL $name: instance has $comps components, expected $want"; fail=1
+  else
+    echo "ok   $name: instance has $comps components"
+  fi
   if [ "$errs" -ne 0 ]; then
     echo "FAIL $name: $errs spar error(s)"
     jq -r '.diagnostics[] | select(.severity == "error") | "  " + .message' <<<"$json"
@@ -70,6 +80,18 @@ elif [ "$bound" -gt "$WCTT_BUDGET_PS" ]; then
   fail=1
 else
   echo "ok   mesh: WCTT of e_lan is $bound ps (budget $WCTT_BUDGET_PS ps)"
+fi
+
+# Lifecycle, from the SMV transition relation spar exports.
+smv="$(spar modes --root Zwinger::Node.Confined --format smv "$dir/zwinger.aadl")" || { echo "spar modes exited non-zero" >&2; exit 1; }
+trans="$(sed -n '/^  TRANS/,/esac/p' <<<"$smv" | grep ' : next(state)' | grep -v '^ *TRUE ' || true)"
+if [ -z "$trans" ]; then
+  echo "FAIL lifecycle: no transition relation for the session"; fail=1
+else
+  if grep -q 'DEAD TRANSITION' <<<"$smv"; then echo "FAIL lifecycle: dead transition"; grep 'DEAD TRANSITION' <<<"$smv"; fail=1; else echo "ok   lifecycle: no dead transition"; fi
+  if grep -Eq 'state = (refused|exited) :' <<<"$trans"; then echo "FAIL lifecycle: a transition leaves refused or exited"; fail=1; else echo "ok   lifecycle: refused and exited are terminal"; fi
+  into="$(grep -E 'next\(state\) (= confined|in \{[^}]*confined)' <<<"$trans" | sed -E 's/^ *state = ([a-z_]+) :.*/\1/' | sort -u | tr '\n' ' ')"
+  if [ "$into" != "preflight " ]; then echo "FAIL lifecycle: confined entered from: ${into:-nothing}"; fail=1; else echo "ok   lifecycle: confined is entered only from preflight"; fi
 fi
 
 exit "$fail"

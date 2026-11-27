@@ -120,8 +120,9 @@ Three planted bugs must each fail verification. Kani (CBMC) and Verus (Z3) check
 - any fault propagates as access the profile did not grant (`ItemCommission`);
 - the known telemetry gap changes: a run that wrote no event still reaches warte as a silent omission;
 - the Pi's event stream to warte has no worst-case traversal time bound, or one above 1 ms.
+- the session lifecycle (modes `loading`, `preflight`, `confined`, `refused`, `exited`) has a dead transition, leaves `refused` or `exited`, or enters `confined` from anything but `preflight`.
 
-Three planted models must each fail the gate. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
+Five planted models must each fail the gate. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
 
 ## Releases
 

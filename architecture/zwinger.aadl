@@ -55,6 +55,13 @@ public
       kernel_in  : in data port KernelAbi;
       events_out : out data port RunEvent;
       access_out : out data port HostAccess;  -- what the confined command does to its host
+      -- Lifecycle triggers, raised by the launcher (REQ-ZW-018).
+      profile_loaded : in event port;
+      profile_bad    : in event port;
+      preflight_ok   : in event port;
+      preflight_fail : in event port;
+      exec_failed    : in event port;
+      child_exit     : in event port;
     annex EMV2 {**
       use types ErrorLibrary;
       error propagations
@@ -72,7 +79,38 @@ public
     **};
   end Session;
 
+  -- The zwinger process before exec: it loads the profile, runs preflight, confines itself and
+  -- execs the command, which becomes the session. It raises the lifecycle events.
+  process Launcher
+    features
+      profile_loaded : out event port;
+      profile_bad    : out event port;
+      preflight_ok   : out event port;
+      preflight_fail : out event port;
+      exec_failed    : out event port;  -- 126/127; the session is already confined
+      child_exit     : out event port;
+  end Launcher;
+
+  process implementation Launcher.Exec
+  end Launcher.Exec;
+
+  -- The session lifecycle (REQ-ZW-018). refused and exited are terminal: no transition leaves
+  -- them, so a refused session never becomes confined, and confined is entered only from
+  -- preflight, so nothing runs before the plan and the kernel check pass. Exit 78 belongs to
+  -- refused.
   process implementation Session.Confined
+    modes
+      loading    : initial mode;
+      preflight  : mode;
+      confined   : mode;
+      refused    : mode;
+      exited     : mode;
+      load_ok    : loading -[profile_loaded]-> preflight;
+      load_fail  : loading -[profile_bad]-> refused;
+      plan_ok    : preflight -[preflight_ok]-> confined;
+      plan_fail  : preflight -[preflight_fail]-> refused;
+      run_exit   : confined -[child_exit]-> exited;
+      run_noexec : confined -[exec_failed]-> exited;
   end Session.Confined;
 
   -- The kernel the session runs on, as the source of sandbox faults.
@@ -161,12 +199,19 @@ public
       profiles  : device ProfileStore.Files;
       resources : device HostResources.Host;
       probe     : process Probe.StateDir;
+      launcher  : process Launcher.Exec;
     connections
       c_profile : port profiles.profile_out -> session.profile_in;
       c_kernel  : port kernel.abi_out -> session.kernel_in;
       c_access  : port session.access_out -> resources.access_in;
       c_events  : port session.events_out -> probe.events_in;
       c_sync    : port probe.sync_out -> sync_out;
+      t_loaded  : port launcher.profile_loaded -> session.profile_loaded;
+      t_bad     : port launcher.profile_bad -> session.profile_bad;
+      t_ok      : port launcher.preflight_ok -> session.preflight_ok;
+      t_fail    : port launcher.preflight_fail -> session.preflight_fail;
+      t_noexec  : port launcher.exec_failed -> session.exec_failed;
+      t_exit    : port launcher.child_exit -> session.child_exit;
   end Node.Confined;
 
 end Zwinger;

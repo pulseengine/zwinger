@@ -627,6 +627,20 @@ artifacts:
       zwinger itself never parses AADL. Waits for the egress design (zwinger#14), which decides
       what the peers become in enforcement.
 
+  - id: REQ-ZW-018
+    type: requirement
+    title: "The session lifecycle is modelled as modes and checked: no confinement without preflight"
+    status: approved
+    description: >
+      The session component carries AADL modes loading, preflight, confined, refused and
+      exited, driven by the launcher (the zwinger process before exec). CI fails when spar
+      reports a dead transition, when any transition leaves refused or exited, or when confined
+      is entered from any mode but preflight. This mirrors main.rs: run confines only after
+      preflight (plan, ABI, enforcement) succeeds, and a refusal exits 78 without exec.
+    links:
+      - type: refines
+        target: REQ-ZW-001
+
   - id: DD-ZW-011
     type: design-decision
     title: "The model reaches profiles as a generated fragment; zwinger never parses AADL"
@@ -683,9 +697,11 @@ artifacts:
       decision is updated with it.
     rationale: >
       The model states the fail-closed claim and the Kani and Verus proofs carry the evidence
-      (REQ-ZW-008, REQ-ZW-013). spar 0.49.0's propagation pass ignores sinks and paths, so it
-      over-approximates where an error can travel: an absence it reports is real, which is the
-      direction the fail-closed check needs. Its fault-tree pass is structural only and does
+      (VER-ZW-005, VER-ZW-006). spar 0.49.0's propagation pass ignores sinks and paths
+      (spar#669), so it over-approximates where an error can travel: an absence it reports is
+      real, which is the direction the fail-closed check needs. That holds only while nothing
+      else in the pass under-approximates; re-check it when spar#669 lands, because honouring
+      sinks makes the pass less conservative. Its fault-tree pass is structural only and does
       not read the annexes, so the gate does not use it. Carrier faults, relay hops and a
       compromised peer wait for the channel (zwinger#10), which does not exist yet.
     links:
@@ -714,6 +730,32 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-016
 
+  - id: DD-ZW-015
+    type: design-decision
+    title: "Behavior zwinger supervises is modelled in spar: AADL modes now, the Behavior Annex when spar checks it"
+    status: approved
+    description: >
+      Owner direction, 2026-11-27: use spar for any behavior zwinger models and supervises.
+      Shape agreed with the spar session, checked against spar main 8bef917.
+    decision: >
+      Lifecycles are AADL modes with event-port triggers, checked by spar modes (reachability,
+      dead transitions, the SMV transition relation) in the architecture gate. Exit codes are
+      data, not modes. Triggers are ports from a sibling component, because spar 0.49.0 does not
+      resolve subcomponent.port triggers. Runtime supervision (observed peers and events against
+      declared connections) and generated profile fragments read spar's output from outside the
+      zwinger binary, pinned to one spar version, failing on any missing key.
+    rationale: >
+      spar parses the Behavior Annex but no pass checks it, so BA states would be unchecked
+      prose; modes are checked today and export to NuSMV. spar insight compares CTF timing, not
+      connections or event presence, and trace-topology has no CLI yet, so zwinger does not
+      reshape its events to fit either. The instance JSON has no schema version, so the pin and
+      a loud converter carry the contract until spar versions it.
+    links:
+      - type: satisfies
+        target: REQ-ZW-018
+      - type: satisfies
+        target: REQ-ZW-016
+
   - id: VER-ZW-007
     type: verification
     title: "spar analysis of the component type and the reference mesh"
@@ -721,10 +763,15 @@ artifacts:
     method: analysis
     description: >
       architecture/check.sh, CI job "Architecture model (spar)", spar 0.49.0. Checks both roots
-      for zero spar errors and a non-empty diagnostic list, no ItemCommission propagation, the
-      pinned telemetry chain from a session to warte, and a WCTT bound for e_lan at or under
-      1 ms. Three planted models must each fail in CI: an ItemCommission source on access_out,
-      the switch type removed from the LAN bus, and the event-loss source removed.
+      for zero spar errors, a non-empty diagnostic list and the expected component count (7 and
+      19); no ItemCommission propagation; the pinned telemetry chain from a session to warte; a
+      WCTT bound for e_lan at or under 1 ms; and, from spar modes --format smv, no dead
+      transition, refused and exited terminal, and confined entered only from preflight. Five
+      planted models must each fail in CI: an ItemCommission source on access_out, the switch
+      type removed, the event-loss source removed, a refused-to-confined transition, and a
+      loading-to-confined transition that skips preflight.
     links:
       - type: verifies
         target: REQ-ZW-016
+      - type: verifies
+        target: REQ-ZW-018

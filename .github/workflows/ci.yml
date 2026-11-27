@@ -206,7 +206,7 @@ jobs:
       - name: Links have their inverses
         run: rivet check bidirectional
 
-      # Requirement verification is 14 of 17 (2026-11-27): REQ-ZW-003 (the Endpoint Security
+      # Requirement verification is 15 of 18 (2026-11-27): REQ-ZW-003 (the Endpoint Security
       # client) waits for the VM, and its Seatbelt stepping stone is REQ-ZW-015; REQ-ZW-007 (Pi
       # kernel) has no verification yet; REQ-ZW-017 (generated peers) waits for zwinger#14.
       # Raise this as they land.
@@ -270,7 +270,15 @@ jobs:
           perl -0pi -e 's/        event_lost   : error source events_out \{ServiceOmission\};.*\n//; s/        events_out : out propagation \{ServiceOmission\};\n//' "$d/zwinger.aadl"
           if grep -q event_lost "$d/zwinger.aadl"; then echo "::error::plant failed"; exit 1; fi
           if architecture/check.sh "$d"; then echo "::error::model without event loss passed"; exit 1; fi
-          echo "all three planted models rejected"
+          d="$(plant revive)"
+          perl -0pi -e 's/(      run_noexec : confined -\[exec_failed\]-> exited;\n)/$1      revive     : refused -[preflight_ok]-> confined;\n/' "$d/zwinger.aadl"
+          grep -q 'revive     : refused' "$d/zwinger.aadl"
+          if architecture/check.sh "$d"; then echo "::error::a refused session becoming confined passed"; exit 1; fi
+          d="$(plant skip)"
+          perl -0pi -e 's/(      run_noexec : confined -\[exec_failed\]-> exited;\n)/$1      skip       : loading -[preflight_ok]-> confined;\n/' "$d/zwinger.aadl"
+          grep -q 'skip       : loading' "$d/zwinger.aadl"
+          if architecture/check.sh "$d"; then echo "::error::confining without preflight passed"; exit 1; fi
+          echo "all five planted models rejected"
 
   mutants:
     # The profile parser, the Linux planner (refusals, ABI decisions, seccomp program) and the
