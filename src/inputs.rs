@@ -90,6 +90,50 @@ pub fn open_profile(path: &Path) -> Result<Opened, String> {
     })
 }
 
+/// `p` with every symlink along it resolved as far as the path exists, and the rest kept
+/// lexically: a dangling symlink resolves to its target, so a directory that does not exist yet
+/// is compared where it would be created.
+fn resolve_lenient(p: &Path) -> PathBuf {
+    let mut out = PathBuf::from("/");
+    let mut rest: Vec<std::ffi::OsString> = absolute(p)
+        .components()
+        .skip(1)
+        .map(|c| c.as_os_str().to_owned())
+        .collect();
+    rest.reverse();
+    let mut hops = 0;
+    while let Some(c) = rest.pop() {
+        if c == ".." {
+            out.pop();
+            continue;
+        }
+        if c == "." {
+            continue;
+        }
+        let next = out.join(&c);
+        match std::fs::read_link(&next) {
+            Ok(target) if hops < 40 => {
+                hops += 1;
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    out.join(target)
+                };
+                let mut parts: Vec<std::ffi::OsString> = normalize(&target)
+                    .components()
+                    .skip(1)
+                    .map(|c| c.as_os_str().to_owned())
+                    .collect();
+                parts.reverse();
+                rest.extend(parts);
+                out = PathBuf::from("/");
+            }
+            _ => out = next,
+        }
+    }
+    normalize(&out)
+}
+
 /// The invocation path: argv[0] as given, or, without a slash, the PATH directories searched up
 /// to the one that holds it. A symlink or an earlier PATH entry inside a write grant would let
 /// the session choose what the next invocation runs.
@@ -118,10 +162,16 @@ fn invocation_outside_write_grants(grants: &[PathBuf]) -> Result<(), String> {
             &absolute(&dir),
             grants,
         )?;
-        if let Ok(resolved) = dir.canonicalize() {
-            inside("PATH directory searched for zwinger", &resolved, grants)?;
-        }
+        // Resolved leniently: a directory, or a symlink to one, that does not exist yet could be
+        // created later inside a grant, so a missing tail is kept and checked too.
+        inside(
+            "PATH directory searched for zwinger",
+            &resolve_lenient(&dir),
+            grants,
+        )?;
         // The shell's search: the first regular file with an execute bit, as execvp takes it.
+        // (execvp asks access(X_OK); the mode bits differ only for ACLs or an exec bit for
+        // others alone, and every directory up to the one holding zwinger is checked either way.)
         let candidate = dir.join(&arg0);
         let executable = std::fs::metadata(&candidate).is_ok_and(|m| {
             use std::os::unix::fs::PermissionsExt;
@@ -292,6 +342,25 @@ mod tests {
             .collect();
         assert_eq!(opened.sha256, want);
         assert_eq!(opened.profile.name, "x");
+    }
+
+    // rivet: verifies REQ-ZW-024
+    #[test]
+    fn a_dangling_symlink_resolves_to_where_its_target_would_be() {
+        let t = tmp("dangle");
+        let link = t.0.join("safe/bin");
+        std::os::unix::fs::symlink(t.0.join("w/later/bin"), &link).unwrap();
+        assert_eq!(resolve_lenient(&link), t.0.join("w/later/bin"));
+        assert!(inside("PATH directory", &resolve_lenient(&link), &[t.0.join("w")]).is_err());
+        // relative targets and .. resolve against the link's directory
+        let rel = t.0.join("safe/rel");
+        std::os::unix::fs::symlink("../w/x", &rel).unwrap();
+        assert_eq!(resolve_lenient(&rel), t.0.join("w/x"));
+        // an existing path resolves like canonicalize
+        assert_eq!(
+            resolve_lenient(&t.0.join("safe")),
+            t.0.join("safe").canonicalize().unwrap()
+        );
     }
 
     #[test]
