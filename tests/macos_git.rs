@@ -145,7 +145,9 @@ fn check(extra: impl Fn(&Path) -> String) -> Result<Vec<String>, String> {
     // A hard link out of .git, then a write through it.
     let before = config(w);
     let linked = sandboxed(&p, w, "ln .git/config cfg")?;
-    eprintln!("  hard link out of .git: {linked}");
+    // Stronger than the inode check below: the link itself must be refused, so no name for a
+    // .git inode exists outside .git.
+    want("hard link out of .git", linked, false);
     if linked {
         let _ = sandboxed(&p, w, "echo '[core] fsmonitor = x' >> cfg")?;
     }
