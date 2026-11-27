@@ -742,6 +742,8 @@ fn run_refuses_a_profile_inside_its_own_write_grant() {
     let o = sc.run(&["/usr/bin/touch", s(&marker)]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(marker.exists());
+}
+
 // rivet: verifies REQ-ZW-022
 #[test]
 fn code_injecting_variables_are_removed_unless_kept() {
