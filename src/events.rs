@@ -431,7 +431,7 @@ mod tests {
 
     // rivet: verifies REQ-ZW-014
     #[test]
-    fn pending_writes_one_line_with_private_modes() {
+    fn pending_writes_one_document_with_private_modes() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("zwinger-ev-{}/x", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -445,6 +445,7 @@ mod tests {
         assert_eq!(files.len(), 1);
         let text = std::fs::read_to_string(&files[0]).unwrap();
         assert!(text.ends_with('\n'), "{text:?}");
+        assert!(!text.ends_with("\n\n"), "one trailing newline: {text:?}");
         let v: serde_json::Value = rivet_yaml::from_str(&text).unwrap();
         assert_eq!(v["schema"], SCHEMA, "{text}");
         assert_eq!(v["profile"], "t");
