@@ -615,7 +615,7 @@ fn events_in(dir: &Path) -> Vec<serde_json::Value> {
     };
     rd.map(|e| {
         let text = std::fs::read_to_string(e.unwrap().path()).unwrap();
-        serde_json::from_str(&text).unwrap()
+        rivet_yaml::from_str(&text).unwrap()
     })
     .collect()
 }
