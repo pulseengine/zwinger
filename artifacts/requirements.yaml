@@ -364,6 +364,30 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-014
 
+  - id: DD-ZW-010
+    type: design-decision
+    title: "The path rules are proven where they ship: verus! in the crate, Kani on the same code"
+    status: approved
+    description: >
+      src/pathrules.rs holds within, the carve-out checker and the noexec checker inside verus!.
+      A normal build erases specs and proofs and compiles the rest; profile::within and the
+      linux checkers are thin wrappers over it.
+    decision: >
+      Prove the shipped functions, not a hand-written mirror. Depend on vstd
+      (=0.0.0-2026-11-01-0251) in normal builds, paired with Verus 0.2026.11.02.8bf68ee in CI
+      (archive pinned by sha256). Keep the Kani harnesses on the same wrappers, so CBMC and Z3
+      each check one implementation.
+    rationale: >
+      A model that drifts from the code fools every prover identically. Proving the code itself
+      removes the mirror, and two solvers with different trusted bases on one implementation do
+      not share a blind spot. cargo-mutants cannot see inside verus!, so planted bugs in CI check
+      that the proofs can fail.
+    links:
+      - type: satisfies
+        target: REQ-ZW-008
+      - type: satisfies
+        target: REQ-ZW-013
+
   - id: VER-ZW-005
     type: verification
     title: "Kani proofs: seccomp program, profile-to-verdict, enforcement decisions"
@@ -405,6 +429,32 @@ artifacts:
         target: REQ-ZW-006
       - type: verifies
         target: REQ-ZW-009
+      - type: verifies
+        target: REQ-ZW-013
+
+  - id: VER-ZW-006
+    type: verification
+    title: "Verus proofs: path rules for paths of any length"
+    status: implemented
+    method: analysis
+    description: >
+      cargo verus verify (Verus 0.2026.11.02.8bf68ee, Z3), CI job "Verus proofs", 18 obligations
+      in src/pathrules.rs over the shipped code. Proven: within_bytes equals spec_within for all
+      byte strings. On normal paths (absolute, no trailing separator but the root), two ancestors
+      of a path are nested and within is transitive. first_carve_violation_bytes returning None
+      implies every compared pair is compatible, and lemma_carve_sound then gives REQ-ZW-008 for
+      every path x of any length: beneath a deny_read no write grant covers x and a read grant
+      covers it only as a stated exception, and beneath a deny_write no write grant covers x.
+      first_noexec_violation_bytes returning None implies no noexec tree lies strictly inside a
+      grant, and lemma_noexec_sound gives REQ-ZW-013: every grant covering a path beneath a noexec
+      tree has lost execute (may_exec_bytes is false). Three planted bugs (the boundary test
+      dropped, a deny_write check dropped, the noexec check dropped) must each fail verification
+      in CI. Trusted base: Verus, Z3, vstd's slice and Seq axioms, and the wrappers' byte
+      conversion (as_os_str().as_bytes(), unit-tested). The normal-form precondition holds
+      because profile paths are normalized at parse and resolved paths come from canonicalize.
+    links:
+      - type: verifies
+        target: REQ-ZW-008
       - type: verifies
         target: REQ-ZW-013
 

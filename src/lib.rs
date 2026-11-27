@@ -9,6 +9,7 @@
 
 pub mod events;
 pub mod linux;
+pub mod pathrules;
 pub mod profile;
 
 /// Exit status when zwinger refuses to start a session (EX_CONFIG).
