@@ -172,7 +172,8 @@ artifacts:
       every other outbound connection. An agent whose proxy cannot run outside the session is not
       supported by this shape. The agent's own command sandbox is off inside zwinger, since a
       second Seatbelt sandbox_init fails; the preset and docs say so, and ZWINGER_PROFILE tells
-      the agent it is already confined. The first pilot is a low-risk peer session.
+      the agent it is already confined. The first pilot is the agent session that maintains zwinger, with a rollback to its previous
+      confinement.
 
   - id: REQ-ZW-041
     type: requirement
