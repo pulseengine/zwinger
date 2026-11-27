@@ -741,15 +741,18 @@ artifacts:
       Lifecycles are AADL modes with event-port triggers, checked by spar modes (reachability,
       dead transitions, the SMV transition relation) in the architecture gate. Exit codes are
       data, not modes. Triggers are ports from a sibling component, because spar 0.49.0 does not
-      resolve subcomponent.port triggers. Runtime supervision (observed peers and events against
+      resolve subcomponent.port triggers (spar#670). The gate reads the SMV transition relation
+      and the dead-transition list, not spar's reachability summary, which #670 found to
+      disagree with the dead-transition list. Runtime supervision (observed peers and events against
       declared connections) and generated profile fragments read spar's output from outside the
       zwinger binary, pinned to one spar version, failing on any missing key.
     rationale: >
-      spar parses the Behavior Annex but no pass checks it, so BA states would be unchecked
-      prose; modes are checked today and export to NuSMV. spar insight compares CTF timing, not
-      connections or event presence, and trace-topology has no CLI yet, so zwinger does not
-      reshape its events to fit either. The instance JSON has no schema version, so the pin and
-      a loud converter carry the contract until spar versions it.
+      spar parses the Behavior Annex but no pass checks it (spar#671), so BA states would be
+      unchecked prose; modes are checked today and export to NuSMV. spar insight compares CTF timing, not
+      connections or event presence, and trace-topology has no CLI or JSON event input yet
+      (spar#672), so zwinger does not reshape its events to fit either. The instance JSON has no schema version (spar#673) and
+      diagnostics carry no structured fields (spar#674), so the pin, a loud converter and
+      planted models carry the contract until spar provides one.
     links:
       - type: satisfies
         target: REQ-ZW-018
