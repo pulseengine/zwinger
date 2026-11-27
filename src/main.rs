@@ -79,7 +79,7 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         );
         return refuse(&e);
     }
-    let socket_dir = match zwinger::sockets::session_dir() {
+    let socket_dir = match zwinger::sockets::session_dir(&grants) {
         Ok(d) => d,
         Err(e) => {
             events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
@@ -156,6 +156,13 @@ fn check(p: &Profile) -> ExitCode {
                     .replacen(" confined:", " would be confined:", 1)
             );
             warn_existing_sockets(plan.write.iter().map(|g| g.resolved.clone()).collect());
+            if enf.unix_sockets && enf.resolve_unix {
+                // Evidence, not enforcement: remove when zwinger#41 runs the e2e test on ABI 9.
+                println!(
+                    "zwinger: note: unix connect restriction: enforced by Landlock ABI 9; \
+                     not CI-verified on Linux (#41)"
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(e) => refuse(&e),
@@ -201,7 +208,7 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         );
         return refuse(&e);
     }
-    let socket_dir = match zwinger::sockets::session_dir() {
+    let socket_dir = match zwinger::sockets::session_dir(&grants) {
         Ok(d) => d,
         Err(e) => {
             events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));

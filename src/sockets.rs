@@ -11,11 +11,44 @@ use std::path::PathBuf;
 /// The environment variable that names the directory for the command.
 pub const VAR: &str = "ZWINGER_SOCKET_DIR";
 
-/// Create a fresh, private (0700) directory under the temp directory and return its resolved
-/// path. The name is short because a UNIX socket path must fit in 104 bytes on macOS.
-pub fn session_dir() -> Result<PathBuf, String> {
+/// Create a fresh, private (0700) directory and return its resolved path. It lies outside every
+/// write grant in `write_grants` (resolved): inside one, the grant's rights would let the session
+/// move or hard-link a foreign socket from a write tree into the directory and connect to it
+/// there. The first base outside every write grant is used: $XDG_RUNTIME_DIR, the temp
+/// directory, /tmp, /var/tmp. The name is short because a UNIX socket path must fit in 104 bytes
+/// on macOS.
+pub fn session_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
+    let mut bases: Vec<PathBuf> = Vec::new();
+    if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR") {
+        bases.push(PathBuf::from(x));
+    }
+    bases.push(std::env::temp_dir());
+    bases.push(PathBuf::from("/tmp"));
+    bases.push(PathBuf::from("/var/tmp"));
+    let outside = |b: &PathBuf| match b.canonicalize() {
+        Ok(r) => !write_grants.iter().any(|g| crate::profile::within(&r, g)),
+        Err(_) => false,
+    };
+    let mut failures = Vec::new();
+    for base in bases.into_iter().filter(outside) {
+        match create_in(&base) {
+            Ok(d) => return Ok(d),
+            Err(e) => failures.push(e),
+        }
+    }
+    Err(if failures.is_empty() {
+        "no place for the session socket directory outside every write grant \
+         ($XDG_RUNTIME_DIR, the temp directory, /tmp and /var/tmp are all granted or missing); \
+         refusing"
+            .to_string()
+    } else {
+        failures.join("; ")
+    })
+}
+
+fn create_in(base: &std::path::Path) -> Result<PathBuf, String> {
     use std::os::unix::fs::DirBuilderExt;
-    let base = std::env::temp_dir();
+    let base = base.to_path_buf();
     let pid = std::process::id();
     for n in 0..64u32 {
         let d = base.join(format!("zw-{pid}-{n}"));
@@ -81,7 +114,7 @@ mod tests {
 
     #[test]
     fn existing_sockets_are_listed_within_the_bounds() {
-        let d = session_dir().unwrap();
+        let d = session_dir(&[]).unwrap();
         std::fs::create_dir_all(d.join("a/b/c")).unwrap();
         let _s1 = std::os::unix::net::UnixListener::bind(d.join("a/s1")).unwrap();
         let _s2 = std::os::unix::net::UnixListener::bind(d.join("a/b/c/s2")).unwrap();
@@ -98,10 +131,29 @@ mod tests {
     }
 
     #[test]
+    fn the_directory_is_never_inside_a_write_grant() {
+        let tmp = std::env::temp_dir().canonicalize().unwrap();
+        let d = session_dir(std::slice::from_ref(&tmp)).unwrap();
+        assert!(
+            !crate::profile::within(&d, &tmp),
+            "{} inside the granted {}",
+            d.display(),
+            tmp.display()
+        );
+        let _ = std::fs::remove_dir(&d);
+        let all = [PathBuf::from("/")];
+        assert!(
+            session_dir(&all)
+                .unwrap_err()
+                .contains("outside every write grant")
+        );
+    }
+
+    #[test]
     fn the_directory_is_fresh_private_and_resolved() {
         use std::os::unix::fs::PermissionsExt;
-        let a = session_dir().unwrap();
-        let b = session_dir().unwrap();
+        let a = session_dir(&[]).unwrap();
+        let b = session_dir(&[]).unwrap();
         assert_ne!(a, b, "each call makes a new directory");
         assert_eq!(a, a.canonicalize().unwrap());
         assert_eq!(

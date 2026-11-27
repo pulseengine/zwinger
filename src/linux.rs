@@ -974,8 +974,12 @@ pub fn confine(profile: &Profile, session_sockets: &Path) -> Result<(Enforcement
         // The per-session socket directory: the session creates and connects to its own sockets
         // here. Listed directories: connect only, on top of whatever grant covers them.
         let session = open_planned(session_sockets)?;
+        // No Refer: nothing can be renamed or hard-linked into the directory from a write tree,
+        // so the only sockets in it are ones bound there (it lies outside every write grant, so
+        // no ancestor grant adds Refer back).
         let mut session_access = fs_all;
         session_access.remove(AccessFs::Execute);
+        session_access.remove(AccessFs::Refer);
         created = created
             .add_rule(PathBeneath::new(session, session_access))
             .map_err(err)?;

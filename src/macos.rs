@@ -366,8 +366,11 @@ pub fn policy_with_session(
             }
             if let Some(dir) = session_sockets {
                 let q = quote_path("socket directory", dir)?;
+                // No file-write-create or file-link: nothing can be renamed or hard-linked in
+                // from a write tree, so the only sockets here are ones bound here. The directory
+                // lies outside every write grant, so no broader rule allows it either.
                 s += &format!(
-                    "(allow file-read* file-write* network-bind network-outbound (subpath {q})) ; per-session socket directory\n"
+                    "(allow file-read* file-write-unlink network-bind network-outbound (subpath {q})) ; per-session socket directory\n"
                 );
             }
             for d in &plan.socket_dirs {
