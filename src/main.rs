@@ -9,7 +9,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("check") if args.len() == 2 => match Profile::load(Path::new(&args[1])) {
-            Ok(p) => check(&p),
+            Ok(p) => match zwinger::inputs::check(&p, Path::new(&args[1])) {
+                Ok(()) => check(&p),
+                Err(e) => refuse(&e),
+            },
             Err(e) => refuse(&e.to_string()),
         },
         Some("explain") if args.len() == 3 => match Profile::load(Path::new(&args[1])) {
@@ -64,6 +67,15 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
         .collect();
     let pending = events::begin(&grants);
     let sha = events::sha256_file(path);
+    // The profile and this executable are what the next run trusts: refuse them inside a
+    // write grant (REQ-ZW-024).
+    if let Err(e) = zwinger::inputs::check(p, path) {
+        events::end(
+            pending,
+            &Event::refused(Some(p.name.clone()), sha, "profile"),
+        );
+        return refuse(&e);
+    }
     let (enf, plan) = match zwinger::linux::confine(p) {
         Ok(c) => c,
         Err(e) => {
@@ -165,6 +177,15 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
         .collect();
     let pending = events::begin(&grants);
     let sha = events::sha256_file(path);
+    // The profile and this executable are what the next run trusts: refuse them inside a
+    // write grant (REQ-ZW-024).
+    if let Err(e) = zwinger::inputs::check(p, path) {
+        events::end(
+            pending,
+            &Event::refused(Some(p.name.clone()), sha, "profile"),
+        );
+        return refuse(&e);
+    }
     let plan = match zwinger::macos::confine(p) {
         Ok(plan) => plan,
         Err(e) => {

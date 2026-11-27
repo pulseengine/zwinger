@@ -632,3 +632,29 @@ fn the_session_receives_its_plan_in_zwinger_grants() {
     has("noexec", sc.path("w"));
     assert_eq!(v["exec"], serde_json::json!([]));
 }
+
+// rivet: verifies REQ-ZW-024
+#[test]
+fn run_refuses_a_profile_inside_its_own_write_grant() {
+    let sc = Scene::new("");
+    let marker = sc.path("w/ran");
+    let inside = sc.path("w/profile.yaml");
+    std::fs::copy(&sc.profile, &inside).unwrap();
+    let o = Command::new(ZWINGER)
+        .env("ZWINGER_EVENTS_DIR", "")
+        .args(["run", s(&inside), "--", "/usr/bin/touch", s(&marker)])
+        .output()
+        .unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(78),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("lies inside write grant"));
+    assert!(!marker.exists(), "the command must not have run");
+    // Control: the same profile outside the grant runs the command.
+    let o = sc.run(&["/usr/bin/touch", s(&marker)]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(marker.exists());
+}
