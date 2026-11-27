@@ -44,11 +44,11 @@ fn blank(src: &str) -> String {
             while i < b.len() {
                 if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
                     depth += 1;
-                    out.extend([b' ', b' ']);
+                    out.extend(*b"  ");
                     i += 2;
                 } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
                     depth -= 1;
-                    out.extend([b' ', b' ']);
+                    out.extend(*b"  ");
                     i += 2;
                     if depth == 0 {
                         break;
@@ -122,11 +122,10 @@ fn ident_before(b: &[u8], i: usize) -> bool {
 
 /// A char literal ('a', '\n', '\'', '\u{..}') rather than a lifetime ('a).
 fn is_char_literal(b: &[u8], i: usize) -> bool {
-    match (b.get(i + 1), b.get(i + 2)) {
-        (Some(b'\\'), _) => true,
-        (Some(_), Some(b'\'')) => true,
-        _ => false,
-    }
+    matches!(
+        (b.get(i + 1), b.get(i + 2)),
+        (Some(b'\\'), _) | (Some(_), Some(b'\''))
+    )
 }
 
 fn char_literal_end(b: &[u8], i: usize) -> usize {
