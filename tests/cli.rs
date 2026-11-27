@@ -133,7 +133,7 @@ fn run_with_an_unloadable_profile_writes_a_profile_refusal_event() {
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
     assert_eq!(files.len(), 1);
     let text = std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let v: serde_json::Value = rivet_yaml::from_str(&text).unwrap();
     assert_eq!(v["verdict"], "refused");
     assert_eq!(v["category"], "profile");
     assert_eq!(v["profile"], serde_json::Value::Null);

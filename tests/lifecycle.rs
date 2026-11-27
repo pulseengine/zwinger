@@ -180,7 +180,7 @@ fn session(profile: &str, cmd: &[&str]) -> (String, Option<String>, Option<i32>)
         String::from_utf8_lossy(&o.stderr)
     );
     let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&events[0]).unwrap()).unwrap();
+        rivet_yaml::from_str(&std::fs::read_to_string(&events[0]).unwrap()).unwrap();
     (
         v["verdict"].as_str().unwrap().to_string(),
         v["category"].as_str().map(String::from),

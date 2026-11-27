@@ -374,8 +374,9 @@ artifacts:
       and warte's probe collects them and ships them with its own identity, relay-ccsds framing
       and relay-sec sealing (later relay-bp store-and-forward, pulseengine/relay#626).
     decision: >
-      One JSON file per run, mode 0600 in a 0700 directory, created before confinement and
-      written through the open descriptor after it. Only the fields in warte#223's table. A
+      One YAML file per run, written with rivet-yaml (warte#223 decided YAML on 2026-11-27, and
+      zwinger already links rivet-yaml, so the trusted base gains no crate), mode 0600 in a 0700
+      directory, created before confinement and written through the open descriptor after it. Only the fields in warte#223's table. A
       refusal is reduced to its category, because refusal texts name paths.
     rationale: >
       zwinger then needs no token, network, retry logic or crypto of its own. The probe already

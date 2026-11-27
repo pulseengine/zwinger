@@ -118,9 +118,11 @@ impl Event {
         }
     }
 
-    pub fn to_json(&self) -> String {
+    /// The record as YAML, written with rivet-yaml (warte#223): strings that would read as
+    /// another type (`'123'`, `'true'`, `'~'`) are quoted, and readers use YAML 1.2.
+    pub fn to_yaml(&self) -> String {
         // Serializing a struct of strings, numbers and options cannot fail.
-        serde_json::to_string(self).unwrap_or_default()
+        rivet_yaml::to_string(self).unwrap_or_default()
     }
 }
 
@@ -190,7 +192,7 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// Create `<dir>/<unix-nanos>-<pid>.json` (mode 0600, the directory 0700 when created).
+    /// Create `<dir>/<unix-nanos>-<pid>.yaml` (mode 0600, the directory 0700 when created).
     pub fn create(dir: &Path) -> std::io::Result<Pending> {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         std::fs::DirBuilder::new()
@@ -201,7 +203,7 @@ impl Pending {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let path = dir.join(format!("{nanos}-{}.json", std::process::id()));
+        let path = dir.join(format!("{nanos}-{}.yaml", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -215,11 +217,13 @@ impl Pending {
         let _ = std::fs::remove_file(&self.path);
     }
 
-    /// Write the event as one line, in one write.
+    /// Write the event as one YAML document, in one write.
     pub fn finish(mut self, event: &Event) -> std::io::Result<()> {
-        let mut line = event.to_json();
-        line.push('\n');
-        self.file.write_all(line.as_bytes())
+        let mut text = event.to_yaml();
+        if !text.ends_with('\n') {
+            text.push('\n');
+        }
+        self.file.write_all(text.as_bytes())
     }
 }
 
@@ -321,7 +325,7 @@ mod tests {
             2,
             1,
         );
-        let v: serde_json::Value = serde_json::from_str(&c.to_json()).unwrap();
+        let v: serde_json::Value = rivet_yaml::from_str(&c.to_yaml()).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
             keys,
@@ -357,7 +361,7 @@ mod tests {
         assert_eq!(v["pid"], std::process::id());
         assert!(v["time"].as_u64().unwrap() > 1_700_000_000);
         let r = Event::refused(None, None, "profile");
-        let v: serde_json::Value = serde_json::from_str(&r.to_json()).unwrap();
+        let v: serde_json::Value = rivet_yaml::from_str(&r.to_yaml()).unwrap();
         assert_eq!(v["verdict"], "refused");
         assert_eq!(v["category"], "profile");
         assert_eq!(v["landlock_abi"], serde_json::Value::Null);
@@ -440,10 +444,10 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 1);
         let text = std::fs::read_to_string(&files[0]).unwrap();
-        assert!(
-            text.ends_with('\n') && text.lines().count() == 1,
-            "{text:?}"
-        );
+        assert!(text.ends_with('\n'), "{text:?}");
+        let v: serde_json::Value = rivet_yaml::from_str(&text).unwrap();
+        assert_eq!(v["schema"], SCHEMA, "{text}");
+        assert_eq!(v["profile"], "t");
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&files[0]), 0o600);
         assert_eq!(mode(&dir), 0o700);
@@ -453,7 +457,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap()
-                .ends_with(".json")
+                .ends_with(".yaml")
         );
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
