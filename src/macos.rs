@@ -490,6 +490,10 @@ pub fn not_enforced(p: &Profile) -> Vec<&'static str> {
     }
     if p.network.unix_sockets == UnixSockets::Unfiltered {
         gaps.push("unix socket connections (unix_sockets = unfiltered)");
+    } else if p.writes().next().is_some() {
+        // Seatbelt checks a rename's target as file-write-create, which bind() needs in the
+        // session socket directory (session_socket_rules; tests/macos_sockdir.rs).
+        gaps.push("unix sockets renamed from a write tree into the session socket directory");
     }
     gaps
 }
@@ -1270,7 +1274,8 @@ mod tests {
             summary(&p, &pl),
             format!(
                 "zwinger: t confined: seatbelt; 1 read, 1 write grants (absent, skipped: {}, {}); \
-                 1 deny_read, 0 deny_write; network: none; unix sockets: confined to socket directories",
+                 1 deny_read, 0 deny_write; network: none; unix sockets: confined to socket directories; \
+                 not enforced: unix sockets renamed from a write tree into the session socket directory",
                 at(&t, "gone"),
                 at(&t, "no")
             )
