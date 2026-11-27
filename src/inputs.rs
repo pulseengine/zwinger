@@ -112,13 +112,22 @@ fn invocation_outside_write_grants(grants: &[PathBuf]) -> Result<(), String> {
         if dir.as_os_str().is_empty() {
             continue;
         }
+        // Each directory searched, by its stated and its resolved path.
         inside(
             "PATH directory searched for zwinger",
             &absolute(&dir),
             grants,
         )?;
+        if let Ok(resolved) = dir.canonicalize() {
+            inside("PATH directory searched for zwinger", &resolved, grants)?;
+        }
+        // The shell's search: the first regular file with an execute bit, as execvp takes it.
         let candidate = dir.join(&arg0);
-        if candidate.is_file() {
+        let executable = std::fs::metadata(&candidate).is_ok_and(|m| {
+            use std::os::unix::fs::PermissionsExt;
+            m.is_file() && m.permissions().mode() & 0o111 != 0
+        });
+        if executable {
             outside_write_grants("zwinger invocation path", &candidate, grants)?;
             break;
         }
