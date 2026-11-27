@@ -846,3 +846,83 @@ fn unix_sockets_connect_only_in_socket_directories() {
         Some(0)
     );
 }
+
+/// A runner home outside /tmp (the profile grants /tmp): under target/tmp.
+fn runner_tree() -> (Dir, PathBuf) {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "zw-runner-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let home = root.join("runners/r1");
+    for d in ["_work", "_tmp", "_diag"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    std::fs::write(home.join("run-helper.sh.template"), "#!/bin/sh\n").unwrap();
+    std::fs::create_dir_all(root.join("runners/r2")).unwrap();
+    std::fs::write(root.join("runners/r2/secret"), "other runner\n").unwrap();
+    std::fs::create_dir_all(root.join("etc")).unwrap();
+    (
+        Dir(root.canonicalize().unwrap()),
+        home.canonicalize().unwrap(),
+    )
+}
+
+/// What the runner does when it starts, as far as the profile decides it: list the home and
+/// every directory above it (the listener's ancestor check), write in _work, and fail to copy
+/// run-helper.sh into the read-only home. A sibling runner's file is listable by name but not
+/// readable. Exit codes name the step that failed.
+const RUNNER_START: &str = r#"
+d="$HOME_DIR"
+while :; do ls "$d" > /dev/null || exit 3; [ "$d" = / ] && break; d=$(dirname "$d"); done
+touch "$HOME_DIR/_work/job" || exit 4
+if cp -f "$HOME_DIR/run-helper.sh.template" "$HOME_DIR/run-helper.sh" 2>/dev/null; then exit 5; fi
+ls "$SIBLING" | grep -q secret || exit 6
+if cat "$SIBLING/secret" 2>/dev/null; then exit 7; fi
+exit 0
+"#;
+
+fn run_runner_start(tree: &Dir, home: &Path, profile_text: &str) -> Output {
+    let profile = tree.0.join("etc/runner.yaml");
+    std::fs::write(&profile, profile_text).unwrap();
+    Command::new(ZWINGER)
+        .env("ZWINGER_EVENTS_DIR", "")
+        .env("HOME_DIR", home)
+        .env("SIBLING", tree.0.join("runners/r2"))
+        .arg("run")
+        .arg(&profile)
+        .arg("--")
+        .args(["/bin/sh", "-c", RUNNER_START])
+        .output()
+        .unwrap()
+}
+
+// rivet: verifies REQ-ZW-046
+#[test]
+fn a_runner_starts_under_the_github_runner_profile() {
+    let template = include_str!("../profiles/github-runner.yaml");
+    let (tree, home) = runner_tree();
+    let text = template.replace("{{home}}", s(&home));
+    let o = run_runner_start(&tree, &home, &text);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "step failed (3 list ancestors, 4 write _work, 5 home writable, 6 sibling not listable, \
+         7 sibling readable): {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // Control: without `list`, the ancestor check fails, as it did on the first canary.
+    let without = text.replace("list:\n  - \"/\"\n", "");
+    assert_ne!(
+        without, text,
+        "the template's list entry moved; update this control"
+    );
+    let o = run_runner_start(&tree, &home, &without);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}

@@ -14,6 +14,7 @@ zwinger run profile.yaml -- AGENT    # Linux, macOS: confined exec; elsewhere: r
 name: demo
 read: [/usr, /etc, /lib, /lib64]        # read + execute
 read_if_present: [/opt]                # skipped when absent
+list: [/]                              # list directory names only (see below)
 write: [/home/me/git/demo, /tmp/demo, /dev/null]
 deny_read: [/home/me/.ssh]             # carve-outs
 deny_write: []
@@ -37,6 +38,10 @@ Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_
 Under `mode: none`, `allow_loopback_ports` lets the session connect to the listed TCP ports on this host and nowhere else. Seatbelt matches this host by its own addresses, not only 127.0.0.1 and ::1, so a service that listens on all interfaces is reachable on its port. Bind such a proxy to 127.0.0.1. Other hosts are refused on every port, listed or not. A typical use is a network proxy that runs outside the session, listens on a fixed port and allows only the domains you name. The session reaches it through `HTTPS_PROXY` and `HTTP_PROXY` (with `NO_PROXY=127.0.0.1,localhost`). A program that ignores those variables gets no network, which is the fail-closed outcome.
 
 On Linux a profile with `allow_loopback_ports` is refused (exit 78): Landlock filters ports, not addresses, so it would allow the port on every host.
+
+## Listing without reading
+
+`list` names directories the session may list, with no file in them becoming readable. It is for programs that check, before they start, that they can list their root and every directory above it, as the GitHub Actions runner does. On Linux, Landlock's listing right covers a directory and every directory beneath it, and on macOS the rule matches the same tree. So `list: [/]` lets the session list directory names anywhere its Unix permissions allow. Each entry must be a directory, and an entry that contains a `deny_read` path is refused, because a listing would show the names `deny_read` hides.
 
 ## What the session receives
 

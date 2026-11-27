@@ -48,6 +48,8 @@ use std::path::{Path, PathBuf};
 pub struct Plan {
     pub read: Vec<Grant>,
     pub write: Vec<Grant>,
+    /// The resolved `list` directories: listing only (REQ-ZW-046).
+    pub list: Vec<Grant>,
     pub skipped: Vec<PathBuf>,
     pub deny_read: Vec<Denied>,
     pub deny_write: Vec<Denied>,
@@ -276,9 +278,35 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
             })
             .collect()
     };
+    // `list`: directory listings only (REQ-ZW-046). Each entry must be a directory, and no
+    // deny_read may lie inside one: a listing there would show what deny_read keeps unreadable.
+    let mut no_skips_list = Vec::new();
+    let list = grants(p.list.iter().map(|d| ("list", d)), &mut no_skips_list)?;
+    for l in &list {
+        if !l.resolved.is_dir() {
+            return Err(format!(
+                "list: {} is not a directory; list grants directory listings only, so use read \
+                 for a file",
+                l.stated.display()
+            ));
+        }
+        if let Some(d) = p
+            .deny_read
+            .iter()
+            .find(|d| crate::profile::within(&resolve(d), &l.resolved))
+        {
+            return Err(format!(
+                "list: {} contains deny_read {}, whose names a listing would show; narrow the \
+                 list entry or drop the deny",
+                l.stated.display(),
+                d.display()
+            ));
+        }
+    }
     let plan = Plan {
         read,
         write,
+        list,
         skipped,
         deny_read: denied(&p.deny_read),
         deny_write: denied(&p.deny_write),
@@ -348,6 +376,14 @@ pub fn policy_with_session(
                 quote_path(g.field, &g.stated)?
             );
         }
+    }
+    // Listing only (REQ-ZW-046): reading a directory's entries, for directories, nothing else.
+    for g in &plan.list {
+        let q = quote_path(g.field, &g.resolved)?;
+        s += &format!(
+            "(allow file-read-data (require-all (subpath {q}) (vnode-type DIRECTORY))) ; list {}\n",
+            quote_path(g.field, &g.stated)?
+        );
     }
 
     for m in &p.mach_lookup {
@@ -548,6 +584,9 @@ pub fn summary(p: &Profile, plan: &Plan) -> String {
         plan.read.len(),
         plan.write.len()
     );
+    if !plan.list.is_empty() {
+        s += &format!(", {} list-only", plan.list.len());
+    }
     if !plan.skipped.is_empty() {
         let names: Vec<String> = plan
             .skipped
@@ -912,6 +951,7 @@ mod tests {
         let mk = |field| Plan {
             read: vec![Grant { field, ..g.clone() }],
             write: vec![],
+            list: vec![],
             skipped: vec![],
             deny_read: vec![d.clone()],
             deny_write: vec![],
@@ -1056,6 +1096,30 @@ mod tests {
             "{}",
             summary(&p, &plan(&p).unwrap())
         );
+    }
+
+    // rivet: verifies REQ-ZW-046
+    #[test]
+    fn list_takes_directories_without_a_deny_read_inside() {
+        let t = tree();
+        let p = profile(&t, "list: [\"@/home\"]\n");
+        let pl = plan(&p).unwrap();
+        let pol = policy(&p, &pl).unwrap();
+        assert!(
+            pol.contains(&format!(
+                "(allow file-read-data (require-all (subpath \"{}\") (vnode-type DIRECTORY)))",
+                at(&t, "home")
+            )),
+            "{pol}"
+        );
+        let e = plan(&profile(&t, "list: [\"@/home/.ssh/k.pub\"]\n")).unwrap_err();
+        assert!(e.contains("is not a directory"), "{e}");
+        let e = plan(&profile(
+            &t,
+            "list: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n",
+        ))
+        .unwrap_err();
+        assert!(e.contains("contains deny_read"), "{e}");
     }
 
     #[test]

@@ -46,6 +46,8 @@ pub struct Grant {
 pub struct Plan {
     pub read: Vec<Grant>,
     pub write: Vec<Grant>,
+    /// The resolved `list` directories: listing only (REQ-ZW-046).
+    pub list: Vec<Grant>,
     pub skipped: Vec<PathBuf>,
     /// The resolved `noexec` trees: no grant at or beneath one keeps the right to execute.
     pub noexec: Vec<PathBuf>,
@@ -149,6 +151,9 @@ impl Enforcement {
             plan.read.len(),
             plan.write.len()
         );
+        if !plan.list.is_empty() {
+            s += &format!(", {} list-only", plan.list.len());
+        }
         if !plan.skipped.is_empty() {
             let names: Vec<String> = plan
                 .skipped
@@ -497,6 +502,31 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
             g.stated.display()
         ));
     }
+    // `list`: directory listings only (REQ-ZW-046). Each entry must be a directory, and no
+    // deny_read may lie inside one: a listing there would show what deny_read keeps unreadable.
+    let mut no_skips_list = Vec::new();
+    let list = grants(p.list.iter().map(|d| ("list", d)), &mut no_skips_list)?;
+    for l in &list {
+        if !l.resolved.is_dir() {
+            return Err(format!(
+                "list: {} is not a directory; list grants directory listings only, so use read \
+                 for a file",
+                l.stated.display()
+            ));
+        }
+        if let Some(d) = p
+            .deny_read
+            .iter()
+            .find(|d| crate::profile::within(&resolve(d), &l.resolved))
+        {
+            return Err(format!(
+                "list: {} contains deny_read {}, whose names a listing would show; narrow the \
+                 list entry or drop the deny",
+                l.stated.display(),
+                d.display()
+            ));
+        }
+    }
     let mut no_skips = Vec::new();
     let socket_dirs = grants(
         p.unix_socket_dirs.iter().map(|d| ("unix_socket_dirs", d)),
@@ -505,6 +535,7 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
     Ok(Plan {
         read,
         write,
+        list,
         skipped,
         noexec,
         socket_dirs,
@@ -978,6 +1009,16 @@ pub fn confine(profile: &Profile, session_sockets: &Path) -> Result<(Enforcement
                 .map_err(err)?;
         }
     }
+    // Listing only: Landlock's ReadDir, which covers the directory and every directory beneath
+    // it; no file becomes readable (REQ-ZW-046).
+    for g in &plan.list {
+        created = created
+            .add_rule(PathBeneath::new(
+                open_planned(&g.resolved)?,
+                BitFlags::from(AccessFs::ReadDir),
+            ))
+            .map_err(err)?;
+    }
     if enf.resolve_unix {
         // The per-session socket directory: the session creates and connects to its own sockets
         // here. Listed directories: connect only, on top of whatever grant covers them.
@@ -1330,6 +1371,7 @@ mod tests {
         let plan = Plan {
             read: vec![],
             write: vec![],
+            list: vec![],
             skipped: vec![PathBuf::from("/opt/x")],
             noexec: vec![],
             socket_dirs: vec![],
@@ -1345,6 +1387,7 @@ mod tests {
         let plan = Plan {
             read: vec![],
             write: vec![],
+            list: vec![],
             skipped: vec![],
             noexec: vec![],
             socket_dirs: vec![],
@@ -1773,6 +1816,22 @@ mod tests {
     fn host_allow_list_refuses_on_linux() {
         let t = tree();
         assert!(plan(&profile(&t, "network:\n  allow: [\"github.com\"]\n")).is_err());
+    }
+
+    // rivet: verifies REQ-ZW-046
+    #[test]
+    fn list_takes_directories_without_a_deny_read_inside() {
+        let t = tree();
+        let p = profile(&t, "list: [\"@/home\"]\n");
+        assert_eq!(plan(&p).unwrap().list.len(), 1);
+        let e = plan(&profile(&t, "list: [\"@/home/.ssh/k.pub\"]\n")).unwrap_err();
+        assert!(e.contains("is not a directory"), "{e}");
+        let e = plan(&profile(
+            &t,
+            "list: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n",
+        ))
+        .unwrap_err();
+        assert!(e.contains("contains deny_read"), "{e}");
     }
 
     // rivet: verifies REQ-ZW-005

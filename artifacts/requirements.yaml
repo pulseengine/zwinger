@@ -1279,3 +1279,55 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-027
+
+  - id: REQ-ZW-046
+    type: requirement
+    title: "A profile can grant directory listing without file reading"
+    status: implemented
+    description: >
+      list names directories the session may list (Landlock ReadDir on Linux; Seatbelt
+      file-read-data on directory vnodes on macOS), covering every directory beneath them, with
+      no file becoming readable. Each entry must be a directory, and an entry containing a
+      deny_read path is refused (exit 78). The GitHub Actions runner refuses to start unless it
+      can list its root and every ancestor; the first confined-runner canary stopped there.
+
+  - id: DD-ZW-028
+    type: design-decision
+    title: "The runner profile lists from / and copies run-helper.sh before confinement"
+    status: approved
+    description: >
+      Found by the first confined-runner canary, 2026-11-28: the runner exited at start because
+      run.sh copies run-helper.sh into the read-only home and the listener checks it can list
+      every ancestor of its root.
+    decision: >
+      profiles/github-runner.yaml grants list: ["/"] and documents a drop-in that copies
+      run-helper.sh before zwinger (ExecStartPre, unconfined) and runs run-helper.sh under
+      zwinger, with a start limit so a profile gap fails the unit, and ZWINGER_EVENTS_DIR outside
+      every write grant. A mount-namespace view showing only the runner's own home is the
+      target (#61); list is the interim, and whether to deploy it is the owner's decision.
+    rationale: >
+      Landlock has no non-recursive listing right and / is an ancestor of every root, so a
+      listing grant on the ancestors is a listing grant on everything the runner user may list.
+      It exposes directory names only; file contents need read, and other runners' homes stay
+      closed by their 0700 mode. A write grant on run-helper.sh instead would let a job change
+      what the next start runs.
+    links:
+      - type: satisfies
+        target: REQ-ZW-046
+
+  - id: VER-ZW-019
+    type: verification
+    title: "A runner-like start under the github-runner profile; list's refusals"
+    status: implemented
+    method: test
+    description: >
+      tests/linux.rs a_runner_starts_under_the_github_runner_profile renders the profile for a
+      home outside /tmp and runs the runner's start steps under zwinger: every ancestor lists,
+      _work is writable, copying run-helper.sh into the home fails, a sibling home's file is
+      listable by name and not readable. The control drops list and fails at the ancestor
+      listing, as the canary did. src/linux.rs and src/macos.rs
+      list_takes_directories_without_a_deny_read_inside: a file and an entry containing a
+      deny_read are refused; the macOS rule is limited to directory vnodes.
+    links:
+      - type: verifies
+        target: REQ-ZW-046
