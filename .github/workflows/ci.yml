@@ -264,6 +264,8 @@ jobs:
       - name: Verus (zwinger's crate)
         env:
           CARGO_TARGET_DIR: target/verus
+          # Plain output: colour codes between "Checking" and the crate name break the match.
+          CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
           cargo verus verify 2>&1 | tee verus.log
@@ -277,6 +279,7 @@ jobs:
       - name: Verus planted bugs (each must be rejected)
         env:
           CARGO_TARGET_DIR: target/verus
+          CARGO_TERM_COLOR: never
         run: |
           set -uo pipefail
           bak="$RUNNER_TEMP/pathrules.rs.bak"
