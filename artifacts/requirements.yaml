@@ -457,12 +457,16 @@ artifacts:
     status: implemented
     method: analysis
     description: >
-      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 26 harnesses over the shipped
-      code in src/linux.rs mod proofs. For x86_64 and aarch64 in all four socket modes, the
+      cargo kani (Kani 0.68.0, CBMC 6.11), CI job "Kani proofs", 31 harnesses over the shipped
+      code in src/linux.rs mod proofs. For x86_64, aarch64 and riscv64 (zwinger#23) in all four
+      socket modes, the
       seccomp program is well formed (every instruction in the emitted subset, every jump inside
       the program, a ret last) and its verdict equals seccomp_spec for every 32-bit audit_arch,
       nr, args[0] and args[1]. From any kernel ABI >= 3 and any network and UNIX-socket mode,
-      the filter's verdict on socket(2) is the one the requirement text states. For every i32
+      the filter's verdict on socket(2) is the one the requirement text states, on each of the
+      three architectures. The syscall numbers in each table are checked against libc for that
+      target by the_native_table_matches_libc, run natively on x86_64 and aarch64 and under
+      qemu-riscv64 for riscv64. For every i32
       ABI, enforcement() refuses below 3, allows network sockets only under mode unfiltered and
       AF_UNIX only when Landlock confines it or the profile opts out, and never requests a
       Landlock right the ABI lacks. Inputs are symbolic over their full range; loop unwinding is

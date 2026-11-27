@@ -610,12 +610,24 @@ pub const AARCH64: Arch = Arch {
     foreign_from: None,
 };
 
+/// riscv64 uses the kernel's generic syscall table (asm-generic/unistd.h), as aarch64 does;
+/// only the audit arch differs (EM_RISCV 0xF3, 64-bit, little-endian).
+pub const RISCV64: Arch = Arch {
+    audit_arch: 0xC000_00F3,
+    socket: 198,
+    ioctl: 29,
+    io_uring: [425, 426, 427],
+    foreign_from: None,
+};
+
 /// The table for the architecture zwinger was built for, if it has one.
 pub fn native_arch() -> Option<Arch> {
     if cfg!(target_arch = "x86_64") {
         Some(X86_64)
     } else if cfg!(target_arch = "aarch64") {
         Some(AARCH64)
+    } else if cfg!(target_arch = "riscv64") {
+        Some(RISCV64)
     } else {
         None
     }
@@ -1673,11 +1685,42 @@ mod tests {
         every_case(AARCH64);
     }
 
+    // rivet: verifies REQ-ZW-005
+    #[test]
+    fn seccomp_program_riscv64() {
+        every_case(RISCV64);
+    }
+
+    /// The table zwinger uses on this target matches the C library's numbers for it, so a
+    /// typo in a table is caught on every architecture CI builds and runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_native_table_matches_libc() {
+        let arch = native_arch().expect("a table on every Linux target zwinger builds for");
+        assert_eq!(arch.socket, libc::SYS_socket as u32);
+        assert_eq!(arch.ioctl, libc::SYS_ioctl as u32);
+        assert_eq!(
+            arch.io_uring,
+            [
+                libc::SYS_io_uring_setup as u32,
+                libc::SYS_io_uring_enter as u32,
+                libc::SYS_io_uring_register as u32
+            ]
+        );
+        assert_eq!(TIOCSTI, libc::TIOCSTI as u32);
+        assert_eq!(TIOCLINUX, libc::TIOCLINUX as u32);
+        assert_eq!(AF_UNIX, libc::AF_UNIX as u32);
+    }
+
     #[test]
     fn native_arch_has_a_table_on_supported_targets() {
         assert_eq!(
             native_arch().is_some(),
-            cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
+            cfg!(any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ))
         );
     }
 }
@@ -1749,6 +1792,10 @@ mod proofs {
     meets_spec_harness!(seccomp_aarch64_unix_no_inet, AARCH64, true, false);
     meets_spec_harness!(seccomp_aarch64_no_unix_inet, AARCH64, false, true);
     meets_spec_harness!(seccomp_aarch64_unix_inet, AARCH64, true, true);
+    meets_spec_harness!(seccomp_riscv64_no_unix_no_inet, RISCV64, false, false);
+    meets_spec_harness!(seccomp_riscv64_unix_no_inet, RISCV64, true, false);
+    meets_spec_harness!(seccomp_riscv64_no_unix_inet, RISCV64, false, true);
+    meets_spec_harness!(seccomp_riscv64_unix_inet, RISCV64, true, true);
 
     /// Vacuity controls: the same check must reject a program with one planted bug. Each takes the
     /// real x86_64 program (no AF_UNIX, no network: every verdict occurs), breaks one thing, and
@@ -1910,6 +1957,12 @@ mod proofs {
     #[kani::unwind(30)]
     fn socket_verdict_follows_the_profile_aarch64() {
         socket_verdict_follows_the_profile(AARCH64);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(30)]
+    fn socket_verdict_follows_the_profile_riscv64() {
+        socket_verdict_follows_the_profile(RISCV64);
     }
 
     /// A short absolute path in normal form over {'/', 'a', 'b'}: "/", "/a", "/ab", "/a/b", ...
