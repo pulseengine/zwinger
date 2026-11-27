@@ -879,7 +879,7 @@ pub fn preflight(profile: &Profile) -> Result<(Enforcement, Plan), String> {
 pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
     use landlock::BitFlags;
     use landlock::{
-        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, Ruleset,
         RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope,
     };
 
@@ -922,8 +922,13 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         (&plan.write, fs_all),
     ] {
         for path in paths.iter().map(|g| &g.resolved) {
-            let fd = PathFd::new(path).map_err(|e| format!("{}: {e}; refusing", path.display()))?;
-            let mut access = if path.is_dir() {
+            // The rule must hold the object the plan checked (REQ-ZW-026).
+            let fd = open_planned(path)?;
+            let is_dir = fd
+                .metadata()
+                .map_err(|e| format!("{}: {e}; refusing", path.display()))?
+                .is_dir();
+            let mut access = if is_dir {
                 access
             } else {
                 access & AccessFs::from_file(abi)
@@ -958,6 +963,48 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
             .collect();
     sys::set_seccomp_filter(&mut filter).map_err(|e| format!("seccomp: {e}; refusing"))?;
     Ok((enf, plan))
+}
+
+/// Open a granted path the plan resolved, once, for its Landlock rule, and refuse unless the
+/// object opened is still at that path. `planned` is canonical, so `O_NOFOLLOW` refuses a symlink
+/// swapped in for the last component, and reading the descriptor's path back through
+/// /proc/self/fd catches any earlier component swapped since planning: the object would then
+/// lie elsewhere, possibly in a tree the plan denied. The rule is built from this descriptor, so
+/// the object checked is the object enforced.
+#[cfg(target_os = "linux")]
+fn open_planned(planned: &Path) -> Result<std::fs::File, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(planned)
+        .map_err(|e| format!("{}: {e}; refusing", planned.display()))?;
+    // With O_PATH, O_NOFOLLOW opens a symlink itself instead of failing; refuse that too.
+    let is_link = f
+        .metadata()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(true);
+    if is_link {
+        return Err(format!(
+            "{} is a symlink now, not the object planned; refusing",
+            planned.display()
+        ));
+    }
+    let now = std::fs::read_link(format!("/proc/self/fd/{}", f.as_raw_fd())).map_err(|e| {
+        format!(
+            "{}: cannot read back the opened path: {e}; refusing",
+            planned.display()
+        )
+    })?;
+    if now != planned {
+        return Err(format!(
+            "{} changed between planning and confinement (it now resolves to {}); refusing",
+            planned.display(),
+            now.display()
+        ));
+    }
+    Ok(f)
 }
 
 /// The kernel's Landlock ABI version, or 0 when Landlock is unavailable.
@@ -1027,6 +1074,65 @@ mod sys {
                 1u32,
             )
         }
+    }
+}
+
+/// The object a rule is built from is the object the plan checked (REQ-ZW-026).
+#[cfg(all(test, target_os = "linux"))]
+mod bind_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("zw-bind-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    // rivet: verifies REQ-ZW-026
+    #[test]
+    fn an_unchanged_planned_path_opens() {
+        let d = tmp("same");
+        std::fs::create_dir_all(d.join("grant")).unwrap();
+        let planned = d.join("grant").canonicalize().unwrap();
+        let f = open_planned(&planned).unwrap();
+        assert!(f.metadata().unwrap().is_dir());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // rivet: verifies REQ-ZW-026
+    #[test]
+    fn a_last_component_swapped_for_a_symlink_is_refused() {
+        let d = tmp("last");
+        std::fs::create_dir_all(d.join("grant")).unwrap();
+        std::fs::create_dir_all(d.join("denied")).unwrap();
+        let planned = d.join("grant").canonicalize().unwrap();
+        // After planning, the granted directory is replaced by a symlink into a denied tree.
+        std::fs::rename(d.join("grant"), d.join("old")).unwrap();
+        std::os::unix::fs::symlink(d.join("denied"), d.join("grant")).unwrap();
+        let e = open_planned(&planned).unwrap_err();
+        assert!(e.contains("is a symlink now"), "{e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // rivet: verifies REQ-ZW-026
+    #[test]
+    fn an_earlier_component_swapped_for_a_symlink_is_refused() {
+        let d = tmp("mid");
+        std::fs::create_dir_all(d.join("p/q")).unwrap();
+        std::fs::create_dir_all(d.join("denied/q")).unwrap();
+        let planned = d.join("p/q").canonicalize().unwrap();
+        // After planning, a parent is replaced by a symlink: the same path now names an object
+        // inside the denied tree.
+        std::fs::rename(d.join("p"), d.join("p0")).unwrap();
+        std::os::unix::fs::symlink(d.join("denied"), d.join("p")).unwrap();
+        let e = open_planned(&planned).unwrap_err();
+        assert!(
+            e.contains("changed between planning and confinement"),
+            "{e}"
+        );
+        assert!(e.contains("denied"), "{e}");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 
