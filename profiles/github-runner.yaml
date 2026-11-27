@@ -30,6 +30,8 @@
 #   and Landlock's listing right covers a directory and everything beneath it, so `list: ["/"]`
 #   lets jobs list directory names anywhere the runner user's permissions allow. No file
 #   becomes readable through it, and other runners' homes stay closed by their 0700 mode;
+# - file metadata (stat): Landlock never restricts it, with or without list; it stays visible
+#   wherever the runner user may traverse, as before;
 # - the network (mode: unfiltered): sccache and Bazel use loopback ports and Landlock filters
 #   by port, not address, so any port rule that admits them admits remote ones too;
 # - the runner's own .runner and .credentials: Runner.Listener reads them, and every job
