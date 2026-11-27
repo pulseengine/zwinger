@@ -82,16 +82,17 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked
-          work="$(mktemp -d)"
+          # The profile lives outside every write grant: zwinger refuses one the session could edit.
+          work="$(mktemp -d)"; conf="$(mktemp -d)"
           secret="$(mktemp -d)"
           echo secret > "$secret/token"
-          cat > "$work/profile.yaml" <<EOF
+          cat > "$conf/profile.yaml" <<EOF
           name: ci-smoke
           read: ["/usr", "/etc"$( [ -e /lib64 ] && echo ', "/lib64"' )$( [ -e /lib ] && echo ', "/lib"' )]
           write: ["$work", "/dev/null"]
           EOF
-          ./target/debug/zwinger check "$work/profile.yaml"
-          ./target/debug/zwinger run "$work/profile.yaml" -- /usr/bin/bash -c "
+          ./target/debug/zwinger check "$conf/profile.yaml"
+          ./target/debug/zwinger run "$conf/profile.yaml" -- /usr/bin/bash -c "
             touch '$work/inside' && echo 'write inside: ok'
             if cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
             echo 'read outside: refused'
@@ -143,17 +144,18 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --locked
-          work="$(mktemp -d)"; ro="$(mktemp -d)"; secret="$(mktemp -d)"
+          # The profiles live outside every write grant: zwinger refuses one the session could edit.
+          work="$(mktemp -d)"; ro="$(mktemp -d)"; secret="$(mktemp -d)"; conf="$(mktemp -d)"
           echo secret > "$secret/token"
           echo public > "$ro/public"; mkdir "$ro/private"; echo key > "$ro/private/key"
-          cat > "$work/profile.yaml" <<EOF
+          cat > "$conf/profile.yaml" <<EOF
           name: ci-smoke
           read: ["/usr", "/bin", "$ro"]
           write: ["$work", "/dev/null"]
           deny_read: ["$ro/private"]
           EOF
-          ./target/debug/zwinger check "$work/profile.yaml"
-          ./target/debug/zwinger run "$work/profile.yaml" -- /bin/bash -c "
+          ./target/debug/zwinger check "$conf/profile.yaml"
+          ./target/debug/zwinger run "$conf/profile.yaml" -- /bin/bash -c "
             /usr/bin/touch '$work/inside' && echo 'write inside: ok'
             if /bin/cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
             echo 'read outside: refused'
@@ -163,8 +165,8 @@ jobs:
           "
           # A carve-out inside a write tree could be renamed away, so the profile is refused.
           printf 'name: ci-smoke\nwrite: ["%s"]\ndeny_write: ["%s/locked"]\n' "$work" "$work" \
-            > "$work/carve.yaml"
-          set +e; ./target/debug/zwinger check "$work/carve.yaml"; rc=$?; set -e
+            > "$conf/carve.yaml"
+          set +e; ./target/debug/zwinger check "$conf/carve.yaml"; rc=$?; set -e
           test "$rc" = 78 && echo 'deny_write inside a write tree: profile refused (78)'
 
   rivet:
