@@ -11,3 +11,7 @@
 - the session lifecycle (modes `loading`, `preflight`, `confined`, `refused`, `exited`) has a dead transition, leaves `refused` or `exited`, or enters `confined` from anything but `preflight`.
 
 Five planted models must each fail the gate. `architecture/zwinger_profile.aadl` is the property set spar reads to generate a session's network section (`spar emit --format zwinger-profile`, seam #17); `architecture/expected/` holds the fragments the reference mesh must produce. The WCTT bound, 34.144 µs over one switch hop, rests on the rates and latencies written in the model as assumptions. It is not a delivery guarantee. The plan is for profiles to take their network peers from a fragment generated from the model (REQ-ZW-017), once the egress design (#14) is decided; zwinger itself will not parse AADL.
+
+## The binary follows the model
+
+`tests/lifecycle.rs` holds the real binary to the lifecycle in the model. It runs sessions that refuse while loading (a malformed profile), refuse in preflight (a missing grant), run and exit, and fail to exec after confinement. It reads each session's event and exit status, maps them onto the modes, and requires every step to be a transition in `architecture/expected/lifecycle.smv`, spar's export of the model. A session that runs a command after reporting a refusal maps to refused → confined, which the model forbids, so the test fails. The architecture job fails if the committed export differs from what spar derives from `zwinger.aadl`.

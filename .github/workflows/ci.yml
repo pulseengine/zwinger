@@ -250,6 +250,13 @@ jobs:
       - name: Model gate (fail-closed, telemetry, WCTT)
         run: architecture/check.sh
 
+      # tests/lifecycle.rs holds the binary to this export; it must be the model's own.
+      - name: The committed lifecycle export equals the model
+        run: |
+          spar modes --root Zwinger::Node.Confined --format smv architecture/zwinger.aadl \
+            > "$RUNNER_TEMP/lifecycle.smv"
+          diff -u architecture/expected/lifecycle.smv "$RUNNER_TEMP/lifecycle.smv"
+
       # Each planted model must fail the gate, or the gate measures nothing.
       - name: Planted models are rejected
         run: |
