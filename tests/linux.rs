@@ -856,7 +856,7 @@ fn runner_tree() -> (Dir, PathBuf) {
         N.fetch_add(1, Ordering::Relaxed)
     ));
     let home = root.join("runners/r1");
-    for d in ["_work", "_tmp", "_diag"] {
+    for d in ["_work", "_tmp", "_diag", "_home"] {
         std::fs::create_dir_all(home.join(d)).unwrap();
     }
     std::fs::write(home.join("run-helper.sh.template"), "#!/bin/sh\n").unwrap();
@@ -879,6 +879,8 @@ const RUNNER_START: &str = r#"
 d="$HOME_DIR"
 while :; do ls "$d" > /dev/null || exit 3; [ "$d" = / ] && break; d=$(dirname "$d"); done
 touch "$HOME_DIR/_work/job" || exit 4
+mkdir -p "$HOME/.cosign" && touch "$HOME/.cosign/key" || exit 9
+if mkdir "$HOME_DIR/.newtool" 2>/dev/null; then exit 10; fi
 if cp -f "$HOME_DIR/run-helper.sh.template" "$HOME_DIR/run-helper.sh" 2>/dev/null; then exit 5; fi
 ls "$SIBLING" | grep -q secret || exit 6
 if cat "$SIBLING/secret" 2>/dev/null; then exit 7; fi
@@ -892,6 +894,7 @@ fn run_runner_start(tree: &Dir, home: &Path, profile_text: &str) -> Output {
     Command::new(ZWINGER)
         .env("ZWINGER_EVENTS_DIR", "")
         .env("HOME_DIR", home)
+        .env("HOME", home.join("_home"))
         .env("SIBLING", tree.0.join("runners/r2"))
         .arg("run")
         .arg(&profile)
@@ -912,7 +915,7 @@ fn a_runner_starts_under_the_github_runner_profile() {
         o.status.code(),
         Some(0),
         "step failed (3 list ancestors, 4 write _work, 5 home writable, 6 sibling not listable, \
-         7 sibling readable, 8 sibling refused for another reason than EACCES): {}",
+         7 sibling readable, 8 sibling refused for another reason than EACCES, 9 $HOME not writable, 10 a new dot-directory in the real home): {}",
         String::from_utf8_lossy(&o.stderr)
     );
     // Control: without `list`, the ancestor check fails, as it did on the first canary.

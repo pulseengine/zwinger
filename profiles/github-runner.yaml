@@ -11,6 +11,7 @@
 #   ExecStartPre=/bin/cp -f {{home}}/run-helper.sh.template {{home}}/run-helper.sh
 #   ExecStart=/usr/local/bin/zwinger run /etc/zwinger/runnerN.yaml -- {{home}}/run-helper.sh
 #   Environment=ZWINGER_EVENTS_DIR=/var/lib/zwinger/events/runnerN
+#   Environment=HOME={{home}}/_home
 #   StartLimitIntervalSec=300
 #   StartLimitBurst=5
 # With --disableupdate, run.sh's loop restarts only on run-helper.sh exit 2, which Restart=always
@@ -31,6 +32,8 @@
 #   lets jobs list directory names anywhere the runner user's permissions allow. No file
 #   becomes readable through it. Other runners' homes stay closed only by their Unix mode, and
 #   that mode is the deployment's to enforce, not zwinger's (next item);
+# - jobs' $HOME: HOME={{home}}/_home is writable and lasts across jobs, like the caches; a fresh
+#   HOME per job is the stronger setup;
 # - file modes and owners: Landlock does not restrict chmod, chown or other metadata changes, so
 #   a job can loosen the mode of anything its user owns, its read-only home included. Make each
 #   home owned by root (e.g. root:runnerN 0750, with the write directories owned by the runner
@@ -78,6 +81,9 @@ write:
   - "{{home}}/_work"
   - "{{home}}/_tmp"
   - "{{home}}/_diag"
+  # Jobs' $HOME (Environment=HOME= in the drop-in): tools write ~/.sigstore, ~/.cosign,
+  # ~/.ssh and more, and the home itself is read-only. Create it, owned by the runner user.
+  - "{{home}}/_home"
   - "/tmp"
   - "/dev/null"
 
