@@ -3,7 +3,7 @@
 `zwinger run` restricts itself with Landlock and seccomp, marks inherited descriptors close-on-exec, then execs the command, so every descendant inherits the confinement. It refuses (exit 78) when:
 
 - the kernel's Landlock ABI is below 3 (Linux 6.2), which cannot restrict `truncate(2)`;
-- a granted path does not exist, or resolves through a symlink into a denied tree;
+- a granted path does not exist, or resolves through a symlink into a denied tree, or no longer names the object the plan checked when its rule is installed;
 - a `deny_read` lies inside a granted tree, or a `deny_write` inside a write tree, because Landlock is an allow list and cannot carve a subtree out of a granted one;
 - a `noexec` tree lies inside a wider grant, whose execute right would still cover it;
 - `network.allow` names hosts or `allow_local_binding` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.

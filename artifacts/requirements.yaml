@@ -1135,3 +1135,46 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-022
+
+  - id: REQ-ZW-026
+    type: requirement
+    title: "Linux: each Landlock rule holds the object the plan checked"
+    status: approved
+    description: >
+      Each granted path is opened once for its Landlock rule, and zwinger refuses (exit 78) when
+      the object opened is no longer at the path the plan resolved and checked: a symlink in its
+      place, or a path that now resolves elsewhere. The rule is built from that descriptor.
+
+  - id: DD-ZW-024
+    type: design-decision
+    title: "Rules are built from a descriptor whose path is read back and compared with the plan"
+    status: approved
+    description: >
+      Found in the STPA-Sec review, 2026-11-27; shipped as a security fix.
+    decision: >
+      open_planned opens the canonical planned path with O_PATH and O_NOFOLLOW, refuses a symlink,
+      reads the descriptor's path back through /proc/self/fd and refuses any difference from the
+      plan, and hands the descriptor to Landlock's PathBeneath. Whether the grant is a directory is
+      taken from the descriptor, not from the path.
+    rationale: >
+      The plan's checks (carve-outs, symlinks into denied trees) are about paths; between planning
+      and installing a rule, a concurrent writer on the path could make it name another object.
+      Reading the path back from the opened object closes that window without changing the plan,
+      and the rule then follows the object checked.
+    links:
+      - type: satisfies
+        target: REQ-ZW-026
+
+  - id: VER-ZW-014
+    type: verification
+    title: "A path swapped between planning and confinement is refused"
+    status: implemented
+    method: test
+    description: >
+      src/linux.rs bind_tests (Linux): an unchanged planned path opens as a directory; the last
+      component replaced by a symlink into a denied tree is refused; an earlier component replaced
+      by a symlink, so the same path names an object in the denied tree, is refused with the new
+      location named.
+    links:
+      - type: verifies
+        target: REQ-ZW-026
