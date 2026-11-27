@@ -23,4 +23,9 @@ exclude_re = [
     # does not even compile them; tests/macos.rs checks what they enforce on the macOS runner,
     # including that inherited descriptors do not leak. Their input, the policy, is gated.
     '\benforce::',
+    # cfg'd out on the Linux mutants job: macOS's home_dir (tested on the macOS runner by
+    # src/profile.rs a_leading_tilde_...) and the fallback for platforms with no backend. The
+    # decision both backends share, passwd_found, is gated.
+    'macos.rs.*home_dir',
+    'profile.rs.*replace home_dir',
 ]

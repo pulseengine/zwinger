@@ -1208,7 +1208,7 @@ pub fn home_dir() -> Result<std::path::PathBuf, String> {
             &mut result,
         )
     };
-    if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
+    if !crate::profile::passwd_found(rc, !result.is_null(), !pw.pw_dir.is_null()) {
         return Err("~: no home directory for this user in the password database".into());
     }
     // SAFETY: pw_dir is a NUL-terminated string inside buf, checked non-null above.

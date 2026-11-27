@@ -145,6 +145,13 @@ fn expand_home(p: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// Whether getpwuid_r found the user and a home directory: a zero return, an entry, and a
+/// directory string. The backends' `home_dir` collects the three facts in unsafe code; the
+/// decision is here, where it can be tested.
+pub(crate) fn passwd_found(rc: i32, entry: bool, dir: bool) -> bool {
+    rc == 0 && entry && dir
+}
+
 #[cfg(target_os = "linux")]
 use crate::linux::home_dir;
 #[cfg(target_os = "macos")]
@@ -392,6 +399,14 @@ network:
         for t in ["name:\n", "name: ~\n", "name: null\n", "name: NULL\n"] {
             assert!(invalid(t), "{t:?}");
         }
+    }
+
+    #[test]
+    fn a_password_lookup_needs_every_part() {
+        assert!(passwd_found(0, true, true));
+        assert!(!passwd_found(34, true, true), "ERANGE");
+        assert!(!passwd_found(0, false, true), "no entry");
+        assert!(!passwd_found(0, true, false), "no directory");
     }
 
     // rivet: verifies REQ-ZW-031
