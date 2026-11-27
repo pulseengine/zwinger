@@ -1219,3 +1219,56 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-025
+
+  - id: REQ-ZW-027
+    type: requirement
+    title: "A confined session connects to UNIX sockets only in the socket directories zwinger names"
+    status: approved
+    description: >
+      While UNIX sockets are confined, the session may connect only to sockets in the
+      per-session socket directory zwinger creates (ZWINGER_SOCKET_DIR) and in the profile's
+      unix_socket_dirs. Sockets elsewhere, including inside write trees, cannot be connected to,
+      though the session may still create sockets in its write trees. On Linux this uses
+      Landlock's UNIX-connect right (ABI 9); below ABI 9, socket(AF_UNIX) stays refused under
+      mode none. On macOS it uses Seatbelt's outbound rules. zwinger check lists sockets that
+      already exist in write trees.
+
+  - id: DD-ZW-025
+    type: design-decision
+    title: "UNIX-socket connect is granted to named directories, not to write trees"
+    status: approved
+    description: >
+      Owner decision, 2026-11-27 (option B over a plan-time socket list, A, which stays as a check
+      warning). Found in the STPA-Sec review; shipped as a security fix.
+    decision: >
+      Linux: write trees keep every right except ResolveUnix; the per-session directory gets the
+      write rights plus ResolveUnix, and each unix_socket_dirs entry gets ResolveUnix alone.
+      macOS: write trees allow network-bind only; network-outbound is allowed in the per-session
+      directory and in unix_socket_dirs. src/sockets.rs creates the per-session directory (0700,
+      short name for macOS's 104-byte socket paths) before confinement.
+    rationale: >
+      A socket in a write tree can belong to a server outside the session, which then acts for
+      it with its own authority. Attaching the connect right to directories closes this whatever
+      the order in which servers start; a socket list taken at plan time would miss a server that
+      starts later. Tools that use their own server socket in a write tree name that directory.
+    links:
+      - type: satisfies
+        target: REQ-ZW-027
+
+  - id: VER-ZW-015
+    type: verification
+    title: "Sockets in write trees refuse connect; socket directories allow it"
+    status: implemented
+    method: test
+    description: >
+      tests/macos.rs unix_sockets_connect_only_in_socket_directories and
+      unfiltered_network_keeps_unix_sockets_confined: a socket in a write tree is refused
+      (EPERM) while the unconfined control connects; binding in a write tree works; the session's
+      own socket in ZWINGER_SOCKET_DIR connects; a socket in a listed unix_socket_dirs entry
+      connects. tests/linux.rs unix_sockets_connect_only_in_socket_directories does the same at
+      Landlock ABI 9 (CI kernels below ABI 9 skip it, and unix_sockets_follow_the_kernel_abi
+      covers AF_UNIX being refused there). Unit tests: the macOS policy rules, the session
+      directory, the bounded socket listing.
+    links:
+      - type: verifies
+        target: REQ-ZW-027

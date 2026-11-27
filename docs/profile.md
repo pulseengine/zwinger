@@ -65,3 +65,15 @@ env_keep: [GIT_SSH_COMMAND]
 The startup line names what was removed (`; environment removed: BASH_ENV, LD_PRELOAD`). An `env_keep` entry that isn't on the list keeps nothing, so it's refused as a likely typo.
 
 This keeps the session from inheriting these settings from the shell that started zwinger. It does not stop the agent from setting them for the processes it starts. Those processes stay confined by the kernel sandbox, and a capability shell such as kapsel applies its own allowlist to the native tools it runs.
+
+## UNIX sockets
+
+While `unix_sockets` is `confined`, the session may create sockets in its write trees but connect only to sockets in two places:
+- the per-session socket directory zwinger creates before confining, passed as `ZWINGER_SOCKET_DIR`, where the session's own processes can meet;
+- the directories the profile lists:
+
+  ```yaml
+  unix_socket_dirs: [/home/me/.cache/bazel]   # e.g. a build server's own socket directory
+  ```
+
+A socket elsewhere, including one inside a write tree, may belong to a server outside the session, so connecting to it fails. On Linux this uses Landlock's UNIX-connect right (ABI 9); below ABI 9, `socket(AF_UNIX)` is refused under mode `none`. On macOS it uses Seatbelt's outbound rules. `zwinger check` lists sockets that already exist in write trees, searching three levels deep.

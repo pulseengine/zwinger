@@ -49,6 +49,9 @@ pub struct Plan {
     pub skipped: Vec<PathBuf>,
     /// The resolved `noexec` trees: no grant at or beneath one keeps the right to execute.
     pub noexec: Vec<PathBuf>,
+    /// The resolved `unix_socket_dirs`: the only places, with the per-session socket directory,
+    /// whose UNIX sockets the session may connect to (REQ-ZW-027).
+    pub socket_dirs: Vec<Grant>,
 }
 
 fn bytes<'a>(paths: &[&'a Path]) -> Vec<&'a [u8]> {
@@ -97,7 +100,8 @@ pub struct Enforcement {
     pub udp: bool,
     /// `socket(AF_UNIX)` is allowed.
     pub unix_sockets: bool,
-    /// Landlock confines pathname `connect(2)` to write trees (ABI 9, sockets not unfiltered).
+    /// Landlock confines pathname `connect(2)` to the socket directories (ABI 9, sockets not
+    /// unfiltered): the per-session one and `unix_socket_dirs`.
     pub resolve_unix: bool,
     /// Landlock scopes abstract UNIX sockets to the session (ABI 6, sockets not unfiltered).
     pub scope_abstract_unix: bool,
@@ -132,7 +136,7 @@ impl Enforcement {
     pub fn summary(&self, name: &str, plan: &Plan) -> String {
         let unix = match (self.unix_sockets, self.resolve_unix) {
             (false, _) => "refused",
-            (true, true) => "confined to write trees",
+            (true, true) => "confined to socket directories",
             (true, false) => "unfiltered",
         };
         let network = match self.network {
@@ -485,11 +489,17 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
             g.stated.display()
         ));
     }
+    let mut no_skips = Vec::new();
+    let socket_dirs = grants(
+        p.unix_socket_dirs.iter().map(|d| ("unix_socket_dirs", d)),
+        &mut no_skips,
+    )?;
     Ok(Plan {
         read,
         write,
         skipped,
         noexec,
+        socket_dirs,
     })
 }
 
@@ -891,7 +901,7 @@ pub fn preflight(profile: &Profile) -> Result<(Enforcement, Plan), String> {
 
 /// Confine the calling process to `profile`. On success every later `exec` runs confined.
 #[cfg(target_os = "linux")]
-pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
+pub fn confine(profile: &Profile, session_sockets: &Path) -> Result<(Enforcement, Plan), String> {
     use landlock::BitFlags;
     use landlock::{
         ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, Ruleset,
@@ -932,9 +942,13 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         created = created.log_new_exec(true).map_err(err)?;
     }
     let noexec: Vec<&Path> = plan.noexec.iter().map(PathBuf::as_path).collect();
+    // UNIX-socket connect only in the socket directories (REQ-ZW-027): write trees may still
+    // create sockets, but not connect to sockets they contain.
+    let mut write_access = fs_all;
+    write_access.remove(AccessFs::ResolveUnix);
     for (paths, access) in [
         (&plan.read, AccessFs::from_read(abi)),
-        (&plan.write, fs_all),
+        (&plan.write, write_access),
     ] {
         for path in paths.iter().map(|g| &g.resolved) {
             // The rule must hold the object the plan checked (REQ-ZW-026).
@@ -953,6 +967,24 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
             }
             created = created
                 .add_rule(PathBeneath::new(fd, access))
+                .map_err(err)?;
+        }
+    }
+    if enf.resolve_unix {
+        // The per-session socket directory: the session creates and connects to its own sockets
+        // here. Listed directories: connect only, on top of whatever grant covers them.
+        let session = open_planned(session_sockets)?;
+        let mut session_access = fs_all;
+        session_access.remove(AccessFs::Execute);
+        created = created
+            .add_rule(PathBeneath::new(session, session_access))
+            .map_err(err)?;
+        for d in &plan.socket_dirs {
+            created = created
+                .add_rule(PathBeneath::new(
+                    open_planned(&d.resolved)?,
+                    BitFlags::from(AccessFs::ResolveUnix),
+                ))
                 .map_err(err)?;
         }
     }
@@ -1257,6 +1289,7 @@ mod tests {
             write: vec![],
             skipped: vec![PathBuf::from("/opt/x")],
             noexec: vec![],
+            socket_dirs: vec![],
         };
         let e = enforcement(4, &net(NetworkMode::Unfiltered, UnixSockets::Confined)).unwrap();
         assert_eq!(
@@ -1271,12 +1304,13 @@ mod tests {
             write: vec![],
             skipped: vec![],
             noexec: vec![],
+            socket_dirs: vec![],
         };
         let e = enforcement(10, &Network::default()).unwrap();
         assert_eq!(
             e.summary("agent", &plan),
             "zwinger: agent confined: landlock abi 10; 0 read, 0 write grants; network: none; \
-             unix sockets: confined to write trees; denial audit log: on"
+             unix sockets: confined to socket directories; denial audit log: on"
         );
         let e = enforcement(10, &net(NetworkMode::None, UnixSockets::Unfiltered)).unwrap();
         assert!(e.summary("a", &plan).ends_with(

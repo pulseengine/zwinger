@@ -45,6 +45,11 @@ pub struct Profile {
     /// grant's execute right would still cover it.
     #[serde(default)]
     pub noexec: Vec<PathBuf>,
+    /// Directories whose UNIX sockets the session may connect to, besides the per-session socket
+    /// directory zwinger creates (ZWINGER_SOCKET_DIR). Sockets elsewhere, including in write
+    /// trees, cannot be connected to while UNIX sockets are confined (REQ-ZW-027).
+    #[serde(default)]
+    pub unix_socket_dirs: Vec<PathBuf>,
     /// Outbound network.
     #[serde(default)]
     pub network: Network,
@@ -149,6 +154,7 @@ impl Profile {
             &mut p.deny_read,
             &mut p.deny_write,
             &mut p.noexec,
+            &mut p.unix_socket_dirs,
         ] {
             for path in list.iter_mut() {
                 *path = normalize(path);
@@ -160,7 +166,7 @@ impl Profile {
     }
 
     /// The path lists by field name, in a fixed order.
-    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 7] {
+    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 8] {
         [
             ("read", &self.read),
             ("write", &self.write),
@@ -169,6 +175,7 @@ impl Profile {
             ("deny_read", &self.deny_read),
             ("deny_write", &self.deny_write),
             ("noexec", &self.noexec),
+            ("unix_socket_dirs", &self.unix_socket_dirs),
         ]
     }
 
