@@ -806,7 +806,7 @@ artifacts:
     status: draft
     description: >
       Under zwinger, the agent's shell is a capability shell grown from
-      bazel-file-ops-component. Common commands run as WASI components that see only the
+      bazel-file-ops-component, now pulseengine/kapsel. Common commands run as WASI components that see only the
       directories zwinger grants, on wasmtime and kiln side by side. Native tools run only from
       an allowlist, still under the kernel sandbox. Shell syntax outside the supported subset is
       refused, never handed to bash or zsh. zwinger's side: a profile field naming the shell
@@ -842,10 +842,10 @@ artifacts:
       The shell has its own WIT (a command interface: args, env, streams, exit code), its tools
       are composed into it with wac, and native execution is a narrow host interface outside
       the shell's own authority. That interface lives in kiln, so gale can use it too
-      (bazel-file-ops-component#140, owner decision 2026-11-27); zwinger supplies policy only,
+      (kapsel#140, owner decision 2026-11-27); zwinger supplies policy only,
       through ZWINGER_GRANTS, and carries no WIT. The parser is a POSIX subset written in
       Rust, so refusing everything outside it is a testable property. Advice from the
-      bazel-file-ops-component session, 2026-11-27.
+      kapsel (then bazel-file-ops-component) session, 2026-11-27.
     rationale: >
       A WASM component can reach only what it is handed, on every platform, which a kernel
       sandbox gives only per OS and with each OS's gaps. Refusing unsupported syntax keeps the
@@ -879,17 +879,16 @@ artifacts:
 
   - id: DD-ZW-019
     type: design-decision
-    title: "bazel-file-ops-component grows into the shell; the rename follows its pending fix release"
+    title: "bazel-file-ops-component grows into the shell, renamed pulseengine/kapsel"
     status: approved
     description: >
       Owner decision, 2026-11-27, over a new repository and building the shell into zwinger.
     decision: >
-      The shell is developed in bazel-file-ops-component, which owns its design issue and the
-      seam with zwinger. Its current TinyGo component and JSON CLI stay the shipped artifact
+      The shell is developed in bazel-file-ops-component, renamed pulseengine/kapsel (owner,
+      2026-11-27), which owns its design issue and the seam with zwinger (kapsel#140). Its current TinyGo component and JSON CLI stay the shipped artifact
       until a Rust replacement passes an equivalence test with the existing JSON configs as the
-      oracle. The repository is renamed only after its pending 0.2.1 release, so consumers do
-      not move name and take a fix in one step. "wash" is taken by wasmCloud; the owner picks
-      the name.
+      oracle. The owner named the shell kapsel ("wash" is taken by wasmCloud) and renamed the
+      repository on 2026-11-27; the old URLs redirect.
     rationale: >
       Keeping the shell out of zwinger keeps an interpreter out of zwinger's trusted base
       (docs/trusted-base.md). Growing the existing repository reuses its components, tests and release
@@ -931,7 +930,7 @@ artifacts:
     title: "The plan reaches the command as one JSON environment variable, set for every command"
     status: approved
     description: >
-      Adopted in kapsel's seam (bazel-file-ops-component#140) and by the owner, 2026-11-27.
+      Adopted in kapsel's seam (kapsel#140) and by the owner, 2026-11-27.
     decision: >
       src/grants.rs builds the value from each backend's plan (linux::session_grants,
       macos::session_grants), and run sets it with ZWINGER_PROFILE. It is set for every
