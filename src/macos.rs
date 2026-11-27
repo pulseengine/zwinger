@@ -53,6 +53,9 @@ pub struct Plan {
     pub deny_write: Vec<Denied>,
     /// Trees nothing may be executed or mapped executable from, resolved like the denials.
     pub noexec: Vec<Denied>,
+    /// The resolved `unix_socket_dirs`: with the per-session socket directory, the only places
+    /// whose UNIX sockets the session may connect to (REQ-ZW-027).
+    pub socket_dirs: Vec<Grant>,
 }
 
 /// What every confined process gets, whatever the profile says. Each entry is the minimum for
@@ -259,6 +262,11 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
     let mut skipped = Vec::new();
     let read = grants(p.reads(), &mut skipped)?;
     let write = grants(p.writes(), &mut skipped)?;
+    let mut no_skips = Vec::new();
+    let socket_dirs = grants(
+        p.unix_socket_dirs.iter().map(|d| ("unix_socket_dirs", d)),
+        &mut no_skips,
+    )?;
     let denied = |stated: &[PathBuf]| -> Vec<Denied> {
         stated
             .iter()
@@ -275,6 +283,7 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
         deny_read: denied(&p.deny_read),
         deny_write: denied(&p.deny_write),
         noexec: denied(&p.noexec),
+        socket_dirs,
     };
     match grant_inside_deny(&plan).or_else(|| carve_inside_write(&plan)) {
         Some(e) => Err(e),
@@ -293,6 +302,19 @@ pub fn quote(field: &str, s: &str) -> Result<String, String> {
     Ok(format!("\"{s}\""))
 }
 
+/// Seatbelt rules for the per-session socket directory (`q` already quoted). bind() needs
+/// file-write-create, so creating and unlinking are allowed for sockets only: no regular file,
+/// directory or hard link can be made here. Seatbelt checks a rename's target as the same
+/// file-write-create, so a socket already in a write tree can be renamed in (measured in
+/// tests/macos_sockdir.rs; documented in docs/profile.md). The directory lies outside every
+/// write grant, so no broader rule allows anything else here.
+pub fn session_socket_rules(q: &str) -> String {
+    format!(
+        "(allow file-read* network-bind network-outbound (subpath {q})) ; per-session socket directory\n\
+         (allow file-write-create file-write-unlink (require-all (subpath {q}) (vnode-type SOCKET))) ; its sockets\n"
+    )
+}
+
 fn quote_path(field: &str, p: &Path) -> Result<String, String> {
     let s = p
         .to_str()
@@ -301,8 +323,18 @@ fn quote_path(field: &str, p: &Path) -> Result<String, String> {
 }
 
 /// The SBPL policy for `p` as planned: `(deny default)`, the base, the grants, the network,
-/// then the carve-outs (Seatbelt applies the last matching rule).
+/// then the carve-outs (Seatbelt applies the last matching rule). Without a per-session socket
+/// directory: what `check` shows.
 pub fn policy(p: &Profile, plan: &Plan) -> Result<String, String> {
+    policy_with_session(p, plan, None)
+}
+
+/// `policy`, plus the per-session socket directory `run` creates (ZWINGER_SOCKET_DIR).
+pub fn policy_with_session(
+    p: &Profile,
+    plan: &Plan,
+    session_sockets: Option<&Path>,
+) -> Result<String, String> {
     let mut s = String::from("(version 1)\n(deny default)\n");
     s += BASE;
 
@@ -339,11 +371,19 @@ pub fn policy(p: &Profile, plan: &Plan) -> Result<String, String> {
     }
     match p.network.unix_sockets {
         UnixSockets::Confined => {
+            // Sockets may be created in write trees, but connected to only in the socket
+            // directories (REQ-ZW-027).
             for g in &plan.write {
                 let q = quote_path(g.field, &g.resolved)?;
-                s += &format!(
-                    "(allow network-outbound network-bind (subpath {q})) ; unix sockets\n"
-                );
+                s += &format!("(allow network-bind (subpath {q})) ; unix sockets: bind\n");
+            }
+            if let Some(dir) = session_sockets {
+                let q = quote_path("socket directory", dir)?;
+                s += &session_socket_rules(&q);
+            }
+            for d in &plan.socket_dirs {
+                let q = quote_path(d.field, &d.resolved)?;
+                s += &format!("(allow network-outbound (subpath {q})) ; unix_socket_dirs\n");
             }
         }
         UnixSockets::Unfiltered => {
@@ -450,6 +490,10 @@ pub fn not_enforced(p: &Profile) -> Vec<&'static str> {
     }
     if p.network.unix_sockets == UnixSockets::Unfiltered {
         gaps.push("unix socket connections (unix_sockets = unfiltered)");
+    } else if p.writes().next().is_some() {
+        // Seatbelt checks a rename's target as file-write-create, which bind() needs in the
+        // session socket directory (session_socket_rules; tests/macos_sockdir.rs).
+        gaps.push("unix sockets renamed from a write tree into the session socket directory");
     }
     gaps
 }
@@ -461,7 +505,7 @@ pub fn summary(p: &Profile, plan: &Plan) -> String {
         NetworkMode::Unfiltered => "unfiltered",
     };
     let unix = match p.network.unix_sockets {
-        UnixSockets::Confined => "confined to write trees",
+        UnixSockets::Confined => "confined to socket directories",
         UnixSockets::Unfiltered => "unfiltered",
     };
     let mut s = format!(
@@ -496,8 +540,9 @@ pub fn summary(p: &Profile, plan: &Plan) -> String {
 
 /// Confine the calling process to `p`. On success every later `exec` runs confined.
 #[cfg(target_os = "macos")]
-pub fn confine(p: &Profile) -> Result<Plan, String> {
-    let (plan, policy) = preflight(p)?;
+pub fn confine(p: &Profile, session_sockets: &Path) -> Result<Plan, String> {
+    let (plan, _) = preflight(p)?;
+    let policy = policy_with_session(p, &plan, Some(session_sockets))?;
     enforce::close_inherited_on_exec()?;
     enforce::apply(&policy)?;
     Ok(plan)
@@ -806,6 +851,7 @@ mod tests {
             deny_read: vec![d.clone()],
             deny_write: vec![],
             noexec: vec![],
+            socket_dirs: vec![],
         };
         assert!(grant_inside_deny(&mk("read")).is_some());
         // inside, stated inside: an exception, for read grants only
@@ -950,7 +996,7 @@ mod tests {
         ];
         expect.push("(allow system-socket (socket-domain AF_UNIX))".into());
         expect.push(format!(
-            "(allow network-outbound network-bind (subpath \"{}\"))",
+            "(allow network-bind (subpath \"{}\"))",
             at(&t, "home/repo")
         ));
         expect.push("(deny file-ioctl (ioctl-command TIOCSTI))".into());
@@ -1157,14 +1203,8 @@ mod tests {
         assert_eq!(
             net,
             vec![
-                &format!(
-                    "(allow network-outbound network-bind (subpath \"{}\"))",
-                    at(&t, "home/repo")
-                ),
-                &format!(
-                    "(allow network-outbound network-bind (subpath \"{}\"))",
-                    at(&t, "usr")
-                ),
+                &format!("(allow network-bind (subpath \"{}\"))", at(&t, "home/repo")),
+                &format!("(allow network-bind (subpath \"{}\"))", at(&t, "usr")),
             ]
         );
         assert!(r.contains(&"(allow system-socket (socket-domain AF_UNIX))".to_string()));
@@ -1202,7 +1242,7 @@ mod tests {
         }
         // unix sockets stay confined unless they are unfiltered too
         assert!(r.contains(&format!(
-            "(allow network-outbound network-bind (subpath \"{}\"))",
+            "(allow network-bind (subpath \"{}\"))",
             at(&t, "home/repo")
         )));
         let s = generate(
@@ -1234,7 +1274,8 @@ mod tests {
             summary(&p, &pl),
             format!(
                 "zwinger: t confined: seatbelt; 1 read, 1 write grants (absent, skipped: {}, {}); \
-                 1 deny_read, 0 deny_write; network: none; unix sockets: confined to write trees",
+                 1 deny_read, 0 deny_write; network: none; unix sockets: confined to socket directories; \
+                 not enforced: unix sockets renamed from a write tree into the session socket directory",
                 at(&t, "gone"),
                 at(&t, "no")
             )

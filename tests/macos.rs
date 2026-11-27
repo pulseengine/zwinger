@@ -171,6 +171,13 @@ fn probe_entry() {
         "tcp_connect" => std::net::TcpStream::connect(&arg).map(|_| ()),
         "unix_connect" => std::os::unix::net::UnixStream::connect(&arg).map(|_| ()),
         "unix_bind" => UnixListener::bind(&arg).map(|_| ()),
+        // Bind and connect a socket in the per-session socket directory zwinger created.
+        "session_socket" => {
+            let dir = std::env::var("ZWINGER_SOCKET_DIR").expect("ZWINGER_SOCKET_DIR set");
+            let p = std::path::Path::new(&dir).join("s");
+            UnixListener::bind(&p)
+                .and_then(|_l| std::os::unix::net::UnixStream::connect(&p).map(|_| ()))
+        }
         "mkdir" => std::fs::create_dir(&arg),
         other => panic!("unknown probe {other}"),
     };
@@ -318,9 +325,11 @@ fn unfiltered_network_keeps_unix_sockets_confined() {
     );
     assert_eq!(probe(&sc, "unix_connect", s(&outside)), Some(EPERM));
     assert_eq!(probe(&sc, "unix_bind", s(&sc.path("o/b"))), Some(EPERM));
+    // A socket in a write tree may belong to a server outside the session: no connect there.
     let inside = sc.path("w/s");
     let _li = UnixListener::bind(&inside).unwrap();
-    assert_eq!(probe(&sc, "unix_connect", s(&inside)), Some(0));
+    assert_eq!(probe(&sc, "unix_connect", s(&inside)), Some(EPERM));
+    assert_eq!(probe(&sc, "session_socket", ""), Some(0));
 }
 
 // rivet: verifies REQ-ZW-015
@@ -350,9 +359,9 @@ fn denials_hold_for_another_spelling_of_the_path() {
     );
 }
 
-// rivet: verifies REQ-ZW-015
+// rivet: verifies REQ-ZW-027
 #[test]
-fn unix_sockets_reach_only_write_trees() {
+fn unix_sockets_connect_only_in_socket_directories() {
     let sc = Scene::new("");
     let outside = sc.path("o/s");
     let _lo = UnixListener::bind(&outside).unwrap();
@@ -362,10 +371,26 @@ fn unix_sockets_reach_only_write_trees() {
         "control"
     );
     assert_eq!(probe(&sc, "unix_connect", s(&outside)), Some(EPERM));
+    // Write trees: sockets may be created, but not connected to (REQ-ZW-027).
     let inside = sc.path("w/s");
     let _li = UnixListener::bind(&inside).unwrap();
-    assert_eq!(probe(&sc, "unix_connect", s(&inside)), Some(0));
+    assert_eq!(
+        probe_unconfined("unix_connect", s(&inside)),
+        Some(0),
+        "control"
+    );
+    assert_eq!(probe(&sc, "unix_connect", s(&inside)), Some(EPERM));
     assert_eq!(probe(&sc, "unix_bind", s(&sc.path("w/b"))), Some(0));
+    // The per-session socket directory: the session's own sockets connect.
+    assert_eq!(probe(&sc, "session_socket", ""), Some(0));
+    // A directory the profile lists: connect allowed.
+    let listed_sc = Scene::new("unix_socket_dirs: [\"@/r\"]\n");
+    let listed = listed_sc.path("r/s");
+    let _ll = UnixListener::bind(&listed).unwrap();
+    assert_eq!(probe(&listed_sc, "unix_connect", s(&listed)), Some(0));
+    let w = listed_sc.path("w/s");
+    let _lw = UnixListener::bind(&w).unwrap();
+    assert_eq!(probe(&listed_sc, "unix_connect", s(&w)), Some(EPERM));
 }
 
 // rivet: verifies REQ-ZW-015

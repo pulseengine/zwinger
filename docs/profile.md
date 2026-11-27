@@ -65,3 +65,19 @@ env_keep: [GIT_SSH_COMMAND]
 The startup line names what was removed (`; environment removed: BASH_ENV, LD_PRELOAD`). An `env_keep` entry that isn't on the list keeps nothing, so it's refused as a likely typo.
 
 This keeps the session from inheriting these settings from the shell that started zwinger. It does not stop the agent from setting them for the processes it starts. Those processes stay confined by the kernel sandbox, and a capability shell such as kapsel applies its own allowlist to the native tools it runs.
+
+## UNIX sockets
+
+While `unix_sockets` is `confined`, the session may create sockets in its write trees but connect only to sockets in two places:
+- the per-session socket directory zwinger creates before confining, passed as `ZWINGER_SOCKET_DIR`, where the session's own processes can meet;
+- the directories the profile lists:
+
+  ```yaml
+  unix_socket_dirs: [/home/me/.cache/bazel]   # e.g. a build server's own socket directory
+  ```
+
+A socket elsewhere, including one inside a write tree, may belong to a server outside the session, so connecting to it fails. On Linux this uses Landlock's UNIX-connect right (ABI 9); below ABI 9, `socket(AF_UNIX)` is refused under mode `none`. On macOS it uses Seatbelt's outbound rules. `zwinger check` lists sockets that already exist in write trees, searching three levels deep.
+
+Verification status: the macOS end-to-end tests cover this rule fully. On Linux it needs Landlock ABI 9, and no CI kernel is at ABI 9 yet, so the Linux connect restriction is verified only on macOS until a CI job on an ABI 9 kernel runs its test (#41). On a kernel at ABI 9 or later the restriction is enforced; below ABI 9, `socket(AF_UNIX)` is refused under mode `none`.
+
+The per-session directory is created outside every write grant, the first of `$XDG_RUNTIME_DIR`, the temp directory, `/tmp` and `/var/tmp` that no write grant covers, and nothing can be hard-linked into it. On Linux nothing can be renamed into it either, so the only sockets in it are ones the session bound there, not a foreign socket moved in from a write tree. On macOS the session can create only sockets there, but Seatbelt treats renaming a socket in like creating one, so a socket already in a write tree can be moved in and connected to. On macOS, keep other servers' sockets out of write trees; `zwinger check` lists the ones it finds. A directory you list in `unix_socket_dirs` that lies inside a write tree doesn't have that protection: the session could move another socket into it. List only directories that hold the sockets you mean, and prefer ones outside write trees.

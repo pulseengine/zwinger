@@ -297,6 +297,16 @@ fn probe_entry() {
             }
             // KEYCTL_GET_KEYRING_ID (0) of the session keyring (-3), creating it if needed.
             "keyctl" => libc::syscall(libc::SYS_keyctl, 0i64, -3i64, 1i64) as i32,
+            "session_socket" => {
+                let dir = std::env::var("ZWINGER_SOCKET_DIR").expect("ZWINGER_SOCKET_DIR set");
+                let p = std::path::Path::new(&dir).join("s");
+                let r = std::os::unix::net::UnixListener::bind(&p)
+                    .and_then(|_l| std::os::unix::net::UnixStream::connect(&p).map(|_| ()));
+                std::process::exit(
+                    r.map(|_| 0)
+                        .unwrap_or_else(|e| e.raw_os_error().unwrap_or(1)),
+                )
+            }
             "unix_connect" => {
                 let r = std::os::unix::net::UnixStream::connect(&arg);
                 std::process::exit(
@@ -801,4 +811,38 @@ fn kernel_keyring_syscalls_are_refused() {
     );
     let sc = Scene::new("");
     assert_eq!(probe(&sc, "keyctl", "").status.code(), Some(libc::EPERM));
+}
+
+// rivet: verifies REQ-ZW-027
+#[test]
+fn unix_sockets_connect_only_in_socket_directories() {
+    if kernel_abi() < zwinger::linux::UNIX_SOCKET_ABI {
+        // Below Landlock ABI 9, socket(AF_UNIX) is refused outright under mode none
+        // (unix_sockets_follow_the_kernel_abi), so there is nothing to connect with.
+        eprintln!("skipped: needs Landlock ABI 9");
+        return;
+    }
+    let sc = Scene::new("");
+    // Write trees: sockets may be created, but not connected to.
+    let inside = sc.path("w/s");
+    let _li = UnixListener::bind(&inside).unwrap();
+    assert_eq!(
+        probe_unconfined("unix_connect", s(&inside)).status.code(),
+        Some(0),
+        "control"
+    );
+    assert_eq!(
+        probe(&sc, "unix_connect", s(&inside)).status.code(),
+        Some(libc::EACCES)
+    );
+    // The per-session socket directory: the session's own sockets connect.
+    assert_eq!(probe(&sc, "session_socket", "").status.code(), Some(0));
+    // A directory the profile lists: connect allowed.
+    let listed_sc = Scene::new("unix_socket_dirs: [\"@/r\"]\n");
+    let listed = listed_sc.path("r/s");
+    let _ll = UnixListener::bind(&listed).unwrap();
+    assert_eq!(
+        probe(&listed_sc, "unix_connect", s(&listed)).status.code(),
+        Some(0)
+    );
 }

@@ -79,7 +79,14 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         );
         return refuse(&e);
     }
-    let (enf, plan) = match zwinger::linux::confine(p) {
+    let socket_dir = match zwinger::sockets::session_dir(&grants) {
+        Ok(d) => d,
+        Err(e) => {
+            events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+            return refuse(&e);
+        }
+    };
+    let (enf, plan) = match zwinger::linux::confine(p, &socket_dir) {
         Ok(c) => c,
         Err(e) => {
             let ev = Event::refused(Some(p.name.clone()), sha, events::category(&e));
@@ -120,6 +127,7 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         .env("ZWINGER_PROFILE", &p.name)
         .env("ZWINGER_ABI", enf.abi.to_string())
         .env(zwinger::grants::VAR, &grants_json)
+        .env(zwinger::sockets::VAR, &socket_dir)
         .exec();
     eprintln!("zwinger: cannot exec {cmd}: {err}");
     ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {
@@ -147,6 +155,14 @@ fn check(p: &Profile) -> ExitCode {
                 enf.summary(&p.name, &plan)
                     .replacen(" confined:", " would be confined:", 1)
             );
+            warn_existing_sockets(plan.write.iter().map(|g| g.resolved.clone()).collect());
+            if enf.unix_sockets && enf.resolve_unix {
+                // Evidence, not enforcement: remove when zwinger#41 runs the e2e test on ABI 9.
+                println!(
+                    "zwinger: note: unix connect restriction: enforced by Landlock ABI 9; \
+                     not CI-verified on Linux (#41)"
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(e) => refuse(&e),
@@ -192,7 +208,14 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         );
         return refuse(&e);
     }
-    let plan = match zwinger::macos::confine(p) {
+    let socket_dir = match zwinger::sockets::session_dir(&grants) {
+        Ok(d) => d,
+        Err(e) => {
+            events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+            return refuse(&e);
+        }
+    };
+    let plan = match zwinger::macos::confine(p, &socket_dir) {
         Ok(plan) => plan,
         Err(e) => {
             let ev = Event::refused(Some(p.name.clone()), sha, events::category(&e));
@@ -233,6 +256,7 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
         .env(zwinger::grants::VAR, &grants_json)
+        .env(zwinger::sockets::VAR, &socket_dir)
         .exec();
     eprintln!("zwinger: cannot exec {cmd}: {err}");
     ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {
@@ -252,6 +276,7 @@ fn check(p: &Profile) -> ExitCode {
                 "{}",
                 zwinger::macos::summary(p, &plan).replacen(" confined:", " would be confined:", 1)
             );
+            warn_existing_sockets(plan.write.iter().map(|g| g.resolved.clone()).collect());
             ExitCode::SUCCESS
         }
         Err(e) => refuse(&e),
@@ -273,6 +298,19 @@ fn scrub_env(command: &mut std::process::Command, keep: &[String]) -> String {
         String::new()
     } else {
         format!("; environment removed: {}", removed.join(", "))
+    }
+}
+
+/// `check` only: UNIX sockets already present in write trees. Once confined, the session cannot
+/// connect to them unless their directory is listed in `unix_socket_dirs` (REQ-ZW-027).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn warn_existing_sockets(write_trees: Vec<std::path::PathBuf>) {
+    for s in zwinger::sockets::existing_sockets(&write_trees, 3, 10_000) {
+        println!(
+            "zwinger: warning: unix socket {} lies in a write tree; the session cannot connect to it \
+             unless its directory is in unix_socket_dirs",
+            s.display()
+        );
     }
 }
 

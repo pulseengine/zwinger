@@ -20,6 +20,7 @@ pub mod linux;
 pub mod macos;
 pub mod pathrules;
 pub mod profile;
+pub mod sockets;
 
 /// Exit status when zwinger refuses to start a session (EX_CONFIG).
 pub const EXIT_REFUSED: i32 = 78;
