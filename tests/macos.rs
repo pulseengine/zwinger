@@ -686,8 +686,17 @@ fn code_injecting_variables_are_removed_unless_kept() {
         "not on the list: {out}"
     );
     let err = String::from_utf8_lossy(&o.stderr);
+    // Every planted scrubbed variable is named; cargo sets DYLD_FALLBACK_LIBRARY_PATH for tests
+    // on macOS, which is removed too.
+    let removed = err.split("; environment removed: ").nth(1).unwrap_or("");
+    for v in ["BASH_ENV", "RUSTC_WRAPPER"] {
+        assert!(
+            removed.split(", ").any(|r| r.trim() == v),
+            "{v} not named: {err}"
+        );
+    }
     assert!(
-        err.contains("; environment removed: BASH_ENV, RUSTC_WRAPPER"),
-        "{err}"
+        !removed.contains("GIT_SSH_COMMAND"),
+        "kept by env_keep: {err}"
     );
 }

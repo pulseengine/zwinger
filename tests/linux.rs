@@ -770,8 +770,16 @@ fn code_injecting_variables_are_removed_unless_kept() {
         "not on the list: {out}"
     );
     let err = String::from_utf8_lossy(&o.stderr);
+    // Every planted scrubbed variable is named; cargo may set others (LD_LIBRARY_PATH) too.
+    let removed = err.split("; environment removed: ").nth(1).unwrap_or("");
+    for v in ["BASH_ENV", "LD_LIBRARY_PATH"] {
+        assert!(
+            removed.split(", ").any(|r| r.trim() == v),
+            "{v} not named: {err}"
+        );
+    }
     assert!(
-        err.contains("; environment removed: BASH_ENV, LD_LIBRARY_PATH"),
-        "{err}"
+        !removed.contains("GIT_SSH_COMMAND"),
+        "kept by env_keep: {err}"
     );
 }
