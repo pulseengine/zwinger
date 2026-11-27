@@ -8,3 +8,5 @@
 - **REQ-ZW-007:** check the Linux backend on a Raspberry Pi 5 kernel.
 
 Traceability lives in [`artifacts/`](../artifacts/) (rivet; `rivet validate` passes).
+
+**v0.2.0, usability and adoption** (owner, 2026-11-27): presets, readable refusals, `protect:`, learn mode, the macOS binary, agent sessions and the runner fleet. Scope: `rivet list --release v0.2.0`; issues: milestone v0.2.0.
