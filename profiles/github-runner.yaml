@@ -12,6 +12,10 @@
 #   ExecStart=/usr/local/bin/zwinger run /etc/zwinger/runnerN.yaml -- {{home}}/run-helper.sh
 #   Environment=ZWINGER_EVENTS_DIR=/var/lib/zwinger/events/runnerN
 #   Environment=HOME={{home}}/_home
+# Before moving HOME, pin every tool home that defaults under $HOME to its existing directory
+# in the real home (RUSTUP_HOME, CARGO_HOME, XDG_CACHE_HOME, npm_config_cache and the like),
+# so caches and per-runner state stay where the write_if_present grants below point; an
+# unpinned one silently moves into the empty _home.
 #   StartLimitIntervalSec=300
 #   StartLimitBurst=5
 # With --disableupdate, run.sh's loop restarts only on run-helper.sh exit 2, which Restart=always
