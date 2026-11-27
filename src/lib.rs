@@ -4,7 +4,10 @@
 //! backend (Landlock plus a seccomp socket filter) is in `linux` (REQ-ZW-004..006, REQ-ZW-008).
 //! The macOS backend (Endpoint Security descendant clients, REQ-ZW-003, `bridge/`) does not
 //! exist yet, so `run` refuses there.
+//!
+//! `events` writes one confinement event per `run` for warte's probe (REQ-ZW-014).
 
+pub mod events;
 pub mod linux;
 pub mod profile;
 
