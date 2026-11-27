@@ -95,12 +95,12 @@ impl Event {
         }
     }
 
-    /// A confined session.
+    /// A confined session. `landlock_abi` is `None` on a backend without Landlock (macOS).
     #[allow(clippy::too_many_arguments)]
     pub fn confined(
         profile: String,
         profile_sha256: Option<String>,
-        landlock_abi: i32,
+        landlock_abi: Option<i32>,
         network: &'static str,
         not_enforced: Vec<String>,
         read_grants: usize,
@@ -108,7 +108,7 @@ impl Event {
         skipped_grants: usize,
     ) -> Event {
         Event {
-            landlock_abi: Some(landlock_abi),
+            landlock_abi,
             network: Some(network),
             not_enforced,
             read_grants,
@@ -314,7 +314,7 @@ mod tests {
         let c = Event::confined(
             "agent".into(),
             Some("ab".into()),
-            6,
+            Some(6),
             "none",
             vec!["denial audit log (abi 7)".into()],
             3,

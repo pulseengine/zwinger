@@ -2,6 +2,7 @@ use std::process::Command;
 
 fn zwinger(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_zwinger"))
+        .env("ZWINGER_EVENTS_DIR", "")
         .args(args)
         .output()
         .unwrap()
@@ -46,12 +47,12 @@ fn check_refuses_a_missing_profile() {
 }
 
 // rivet: verifies REQ-ZW-001
-#[cfg(not(target_os = "linux"))]
 #[test]
 fn run_never_starts_unconfined() {
-    // A valid profile, a harmless command: still refused, because no backend exists (REQ-ZW-001).
+    // A valid profile no backend can enforce (no backend filters by host name), a harmless
+    // command: refused on every platform, with or without a backend (REQ-ZW-001).
     let marker = std::env::temp_dir().join(format!("zwinger-ran-{}", std::process::id()));
-    let p = profile("name: \"s\"\n");
+    let p = profile("name: \"s\"\nnetwork:\n  allow: [\"example.org\"]\n");
     let o = zwinger(&[
         "run",
         p.0.to_str().unwrap(),

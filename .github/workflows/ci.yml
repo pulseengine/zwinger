@@ -95,6 +95,76 @@ jobs:
             echo 'read outside: refused'
           "
 
+  macos:
+    # The Seatbelt prototype (src/macos.rs, REQ-ZW-003, DD-ZW-007) on a hosted macOS runner:
+    # tests/macos.rs makes zwinger apply its policy with sandbox_init and exec probes that must
+    # be refused. sandbox_init cannot be nested, so this cannot run inside another sandbox.
+    name: macOS confinement (seatbelt)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: OS under test
+        run: |
+          sw_vers
+          uname -srm
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch; toolchain pinned below
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests (unit, CLI, end-to-end confinement)
+        run: cargo test --locked --no-fail-fast
+
+      # A confined process that dies leaves its reason in the unified log (Seatbelt denials) and
+      # in a crash report, not in the test output.
+      - name: Seatbelt denials and crash reports (on failure)
+        if: failure()
+        run: |
+          log show --last 15m --style compact --predicate 'sender == "Sandbox"' | grep -F 'deny' | tail -200 || true
+          ls -t ~/Library/Logs/DiagnosticReports/ 2>/dev/null | head -20 || true
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/*.ips 2>/dev/null | head -3); do
+            echo "== $f"; head -c 4000 "$f"; echo
+          done
+
+      - name: Confine a process and show the refusals
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          work="$(mktemp -d)"; ro="$(mktemp -d)"; secret="$(mktemp -d)"
+          echo secret > "$secret/token"
+          echo public > "$ro/public"; mkdir "$ro/private"; echo key > "$ro/private/key"
+          cat > "$work/profile.yaml" <<EOF
+          name: ci-smoke
+          read: ["/usr", "/bin", "$ro"]
+          write: ["$work", "/dev/null"]
+          deny_read: ["$ro/private"]
+          EOF
+          ./target/debug/zwinger check "$work/profile.yaml"
+          ./target/debug/zwinger run "$work/profile.yaml" -- /bin/bash -c "
+            /usr/bin/touch '$work/inside' && echo 'write inside: ok'
+            if /bin/cat '$secret/token' 2>/dev/null; then echo 'read outside: NOT REFUSED'; exit 1; fi
+            echo 'read outside: refused'
+            /bin/cat '$ro/public' > /dev/null && echo 'read grant: ok'
+            if /bin/cat '$ro/private/key' 2>/dev/null; then echo 'deny_read: NOT REFUSED'; exit 1; fi
+            echo 'deny_read inside a read-only grant: refused'
+          "
+          # A carve-out inside a write tree could be renamed away, so the profile is refused.
+          printf 'name: ci-smoke\nwrite: ["%s"]\ndeny_write: ["%s/locked"]\n' "$work" "$work" \
+            > "$work/carve.yaml"
+          set +e; ./target/debug/zwinger check "$work/carve.yaml"; rc=$?; set -e
+          test "$rc" = 78 && echo 'deny_write inside a write tree: profile refused (78)'
+
   rivet:
     name: Rivet traceability
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
@@ -134,15 +204,17 @@ jobs:
       - name: Links have their inverses
         run: rivet check bidirectional
 
-      # Overall weighted coverage is 93.1% (measured 2026-11-26; 94 fails). Requirement
-      # verification is 10 of 12: REQ-ZW-003 (macOS, waits for the VM) and REQ-ZW-007 (Pi kernel)
-      # are drafts with no verification yet. Raise this as they land.
+      # Requirement verification is 13 of 15 (2026-11-27): REQ-ZW-003 (the Endpoint Security
+      # client) waits for the VM, and its Seatbelt stepping stone is REQ-ZW-015; REQ-ZW-007 (Pi
+      # kernel) has no verification yet.
+      # Raise this as they land.
       - name: Requirement verification coverage
         run: rivet coverage --fail-under 93 --strict-empty
 
   mutants:
-    # The profile parser and the Linux planner (refusals, ABI decisions, seccomp program) with
-    # zero missed mutants. Exclusions and their reasons are in .cargo/mutants.toml.
+    # The profile parser, the Linux planner (refusals, ABI decisions, seccomp program) and the
+    # macOS planner and Seatbelt policy generator with zero missed mutants.
+    # Exclusions and their reasons are in .cargo/mutants.toml.
     name: cargo mutants (parser + planner)
     runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","rust-cpu"]') || 'ubuntu-24.04' }}
     timeout-minutes: 45
@@ -180,7 +252,7 @@ jobs:
       - name: Mutate
         run: |
           set -o pipefail
-          cargo mutants --no-shuffle -j 2 -f src/profile.rs -f src/linux.rs -f src/events.rs | tee mutants.log
+          cargo mutants --no-shuffle -j 2 -f src/profile.rs -f src/linux.rs -f src/events.rs -f src/macos.rs | tee mutants.log
           grep -Eq '^[1-9][0-9]* mutants tested' mutants.log
 
       - name: Upload mutants report

@@ -30,7 +30,10 @@ artifacts:
     description: >
       Confine the session's process tree with es_new_descendants_client (macOS 27) instead of the
       deprecated sandbox-exec, covering file, exec and network events of every descendant. Subject
-      to the spike and Apple granting the ES entitlement.
+      to the spike and Apple granting the ES entitlement. Until then a Seatbelt prototype
+      (src/macos.rs) confines zwinger run on macOS: it writes the profile as an SBPL
+      policy, applies it with sandbox_init and execs the session, and refuses with exit 78 what it
+      cannot enforce. The Endpoint Security client is pending.
 
   - id: REQ-ZW-004
     type: requirement
@@ -144,7 +147,11 @@ artifacts:
       noexec tree strictly inside a wider grant is refused, because that grant's execute right
       would still cover it. execve of a file beneath the tree then fails with EACCES. Not
       covered: code run without execve, by an interpreter reading a script (sh script) or by the
-      dynamic loader mapping a binary (ld.so binary), which Landlock does not see.
+      dynamic loader mapping a binary (ld.so binary), which Landlock does not see. On macOS (the
+      Seatbelt prototype) a noexec tree denies process-exec and file-map-executable after every
+      grant, so it is enforced inside a wider read-only grant too (inside a write grant it is
+      refused, as on Linux); exec there fails and zwinger exits 126.
+
   - id: REQ-ZW-014
     type: requirement
     title: "Each run reports its confinement to warte, without paths"
@@ -161,6 +168,20 @@ artifacts:
       or refused: a failure is reported on stderr. ZWINGER_EVENTS_DIR overrides the
       directory (empty turns events off). The default is $XDG_STATE_HOME/warte/zwinger, else
       ~/.local/state/warte/zwinger.
+
+  - id: REQ-ZW-015
+    type: requirement
+    title: "macOS: the Seatbelt prototype confines zwinger run until Endpoint Security exists"
+    status: approved
+    description: >
+      On macOS, zwinger run writes the profile as a Seatbelt (SBPL) policy starting from
+      (deny default), applies it with sandbox_init and execs, and check runs the same plan and
+      policy without applying it. It refuses, with exit 78, whatever it cannot enforce as written:
+      a missing granted path, a grant resolving into a denied tree, a carve-out strictly inside a
+      write grant, a host allow list or loopback binding, a quote or control character in a policy
+      string, and a failing sandbox_init. A denied operation fails with EPERM. This is a stepping
+      stone: the Endpoint Security requirement remains the target and is not verified by these
+      tests.
 
   - id: DD-ZW-001
     type: design-decision
@@ -388,6 +409,48 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-013
 
+  - id: DD-ZW-007
+    type: design-decision
+    title: "macOS prototype: Seatbelt, Endpoint Security later"
+    status: approved
+    description: >
+      Until the Endpoint Security client exists (REQ-ZW-003), zwinger run on macOS
+      confines the session with Seatbelt: src/macos.rs plans the profile (granted paths must
+      exist and are resolved; absent optional grants are skipped; a grant that resolves into a
+      denied tree is refused), writes an SBPL policy starting from (deny default) with a small
+      documented base, applies it with sandbox_init and execs. The planner and the policy
+      generator compile on every platform and are unit- and mutation-tested on Linux CI; only
+      the sandbox_init call is macOS-only, so an ES client can reuse the plan.
+    decision: >
+      Ship a Seatbelt backend as a prototype. Seatbelt applies the last matching rule, so
+      deny_read, deny_write and noexec inside a read-only grant are enforced (emitted after the
+      grants) rather than refused as on Linux; inside a write grant they are refused, as on
+      Linux, because Seatbelt matches paths and the session could rename a directory above the
+      carve-out or hard-link a file out of it. A read stated inside a deny_read is re-allowed
+      after the denials, and any denial inside that exception is emitted again after it. network.allow and allow_local_binding are refused as on Linux, because Seatbelt
+      filters by address and port, not host name. network.mode = unfiltered opens IP sockets only;
+      UNIX sockets stay confined to write trees unless unix_sockets = unfiltered. A path or Mach
+      name containing a quote, a backslash or a control character is refused rather than escaped.
+      Denials are plain subpath rules: on the CI runner's case-insensitive volume Seatbelt held
+      them for the path spelled in another case, including a denied path that did not exist yet
+      and one stated in another case than the name on disk (tests/macos.rs), so no case-folding
+      regex is emitted.
+    rationale: >
+      sandbox_init is deprecated and Apple calls its profile language "not API", but it works
+      without an Apple entitlement, so macOS sessions can be confined today instead of being
+      refused. Endpoint Security remains the target: it is supported API and sees every
+      descendant's file, exec and network events. Known gaps of the prototype, stated so they
+      are not mistaken for coverage: reading sysctls is not confined; terminal ioctls on the
+      inherited terminal are allowed except TIOCSTI; hard links to a denied file from outside
+      the denied tree are matched by the path they were opened through; the policy syntax can
+      change with any macOS release; there is no denial log beyond Seatbelt's own; case
+      handling was measured on a case-insensitive APFS volume only.
+    links:
+      - type: satisfies
+        target: REQ-ZW-003
+      - type: satisfies
+        target: REQ-ZW-015
+
   - id: VER-ZW-005
     type: verification
     title: "Kani proofs: seccomp program, profile-to-verdict, enforcement decisions"
@@ -467,9 +530,10 @@ artifacts:
       src/profile.rs tests: missing file, unknown key, wrong type, missing or blank name, relative
       and '..' paths in each of the four path fields, write inside deny_read or deny_write, read
       equal to deny_read, non-exact hosts and Mach service names, and the refusal text.
-      tests/cli.rs: check refuses a missing profile with 78; on platforms without a backend, run
-      never executes the command. Mutation-tested with cargo-mutants in CI (mutants job, zero
-      missed; equivalent mutants listed in .cargo/mutants.toml).
+      tests/cli.rs: check refuses a missing profile with 78; on every platform, run refuses a
+      profile no backend can enforce (a host allow list) with 78 and never executes the command.
+      Mutation-tested with cargo-mutants in CI (mutants job, zero missed;
+      equivalent mutants listed in .cargo/mutants.toml).
     links:
       - type: verifies
         target: REQ-ZW-001

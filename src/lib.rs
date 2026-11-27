@@ -2,13 +2,14 @@
 //!
 //! The profile and its fail-closed loading are in `profile` (REQ-ZW-001, REQ-ZW-002). The Linux
 //! backend (Landlock plus a seccomp socket filter) is in `linux` (REQ-ZW-004..006, REQ-ZW-008).
-//! The macOS backend (Endpoint Security descendant clients, REQ-ZW-003, `bridge/`) does not
-//! exist yet, so `run` refuses there.
+//! The macOS backend is a Seatbelt prototype in `macos` (REQ-ZW-003, DD-ZW-007); the target is
+//! an Endpoint Security descendants client (`bridge/`). Elsewhere `run` refuses.
 //!
 //! `events` writes one confinement event per `run` for warte's probe (REQ-ZW-014).
 
 pub mod events;
 pub mod linux;
+pub mod macos;
 pub mod pathrules;
 pub mod profile;
 

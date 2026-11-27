@@ -14,6 +14,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const ZWINGER: &str = env!("CARGO_BIN_EXE_zwinger");
+// Every spawn sets ZWINGER_EVENTS_DIR to "" (events off) unless a test sets its own: test runs must
+// not drop confinement events where a real warte probe collects them.
 
 struct Dir(PathBuf);
 impl Drop for Dir {
@@ -76,6 +78,7 @@ impl Scene {
 
     fn check(&self) -> Output {
         Command::new(ZWINGER)
+            .env("ZWINGER_EVENTS_DIR", "")
             .arg("check")
             .arg(&self.profile)
             .output()
@@ -92,6 +95,7 @@ impl Scene {
 
     fn run_env(&self, cmd: &[&str], env: &[(&str, &str)]) -> Output {
         let o = Command::new(ZWINGER)
+            .env("ZWINGER_EVENTS_DIR", "")
             .arg("run")
             .arg(&self.profile)
             .arg("--")
@@ -392,6 +396,7 @@ fn exit_status_passes_through() {
     let sc = Scene::new("");
     assert_eq!(sc.run(&bash("exit 7")).status.code(), Some(7));
     let o = Command::new(ZWINGER)
+        .env("ZWINGER_EVENTS_DIR", "")
         .args(["run", s(&sc.profile), "--", "/nonexistent/cmd"])
         .output()
         .unwrap();
@@ -403,6 +408,7 @@ fn refused(extra: &str) {
     let sc = Scene::new(extra);
     let marker = sc.path("w/ran");
     let o = Command::new(ZWINGER)
+        .env("ZWINGER_EVENTS_DIR", "")
         .arg("run")
         .arg(&sc.profile)
         .arg("--")
@@ -651,6 +657,7 @@ fn a_refused_run_writes_its_category_and_no_reason_text() {
     let sc = Scene::new("deny_read: [\"@/r/public\"]\n");
     let dir = sc.path("o/events");
     let o = Command::new(ZWINGER)
+        .env("ZWINGER_EVENTS_DIR", "")
         .arg("run")
         .arg(&sc.profile)
         .arg("--")
