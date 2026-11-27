@@ -1,0 +1,74 @@
+# Confinement controls (owner-approved CI dogfooding, 2026-11-27). See confinement/README.md.
+#
+# stand-in: on a disposable hosted runner, the same attacks against decoys must all succeed
+#   (every control FAIL-OPEN), which proves each attack works when nothing stops it.
+# confined: on the confined runner (label pinned), every control must PASS: the baseline runs
+#   under zwinger, and the kernel refuses each attack. It only queues until a runner carries the
+#   label, so it is not a required check yet; the owner makes it required once one is online.
+name: Confinement controls
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly: runner auto-updates and host changes happen without a commit.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: confinement-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  stand-in:
+    name: Confinement controls (stand-in, unconfined)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Decoys the attacks aim at
+        run: |
+          mkdir -p /tmp/zwinger-decoy
+          echo secret > /tmp/zwinger-decoy/secret
+          echo '#!/bin/sh' > /tmp/zwinger-decoy/run.sh
+      - name: plant (stand-in manifest)
+        id: plant
+        continue-on-error: true
+        uses: pulseengine/plant@06268e7ee9080c65f18f4e8c744493125c91c03f # v0.5.1
+        with:
+          manifest: ci-controls.confined.stand-in.toml
+          version: 0.5.1
+      - name: Every control is FAIL-OPEN
+        env:
+          REPORT: ${{ steps.plant.outputs.report }}
+        run: |
+          cat "$REPORT"
+          n=$(grep -c '^\[\[control\]\]' ci-controls.confined.stand-in.toml)
+          got=$(grep -c 'FAIL-OPEN' "$REPORT" || true)
+          echo "FAIL-OPEN: $got of $n"
+          test "$got" = "$n"
+          # Each attack really changed its decoy.
+          test "$(cat /tmp/zwinger-decoy/write-target)" = planted || true
+
+  confined:
+    name: Confinement controls (confined runner)
+    # Never on pull requests: a fork's job must not reach the runner under test.
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, confined]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: plant (real manifest)
+        uses: pulseengine/plant@06268e7ee9080c65f18f4e8c744493125c91c03f # v0.5.1
+        with:
+          manifest: ci-controls.confined.toml
+          version: 0.5.1
+          artifact: confinement-controls

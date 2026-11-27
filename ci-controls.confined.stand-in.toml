@@ -1,0 +1,33 @@
+# Confinement pack, stand-in: the same attacks on a disposable unconfined runner, aimed at decoy
+# copies the workflow creates. Every control must report FAIL-OPEN, which shows each attack
+# really works when nothing stops it, so a PASS on the confined runner means confinement.
+
+[[control]]
+id = "confined-write-decoy"
+check = "Confinement controls (stand-in)"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-write-decoy"
+stderr_or_stdout_matches = "Permission denied|EACCES"
+[control.env]
+ZW_REQUIRE_CONFINED = "0"
+ZW_WRITE_TARGET = "/tmp/zwinger-decoy/write-target"
+
+[[control]]
+id = "confined-read-decoy"
+check = "Confinement controls (stand-in)"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-read-decoy"
+stderr_or_stdout_matches = "Permission denied|EACCES"
+[control.env]
+ZW_REQUIRE_CONFINED = "0"
+ZW_READ_TARGET = "/tmp/zwinger-decoy/secret"
+
+[[control]]
+id = "confined-replace-runner-file"
+check = "Confinement controls (stand-in)"
+run = "sh confinement/probe/job.sh"
+plant = "ci-controls/confined-replace-runner-file"
+stderr_or_stdout_matches = "Permission denied|EACCES|Read-only file system"
+[control.env]
+ZW_REQUIRE_CONFINED = "0"
+ZW_RUNNER_FILE = "/tmp/zwinger-decoy/run.sh"
