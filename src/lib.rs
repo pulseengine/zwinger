@@ -12,6 +12,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod env;
 pub mod events;
 pub mod grants;
 pub mod inputs;

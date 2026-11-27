@@ -658,3 +658,47 @@ fn run_refuses_a_profile_inside_its_own_write_grant() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(marker.exists());
 }
+
+// rivet: verifies REQ-ZW-022
+#[test]
+fn code_injecting_variables_are_removed_unless_kept() {
+    // Not DYLD_*: SIP strips those from /usr/bin binaries by itself, which would hide a failure.
+    let sc = Scene::new("env_keep: [\"GIT_SSH_COMMAND\"]\n");
+    let env = [
+        ("BASH_ENV", "/nonexistent-zwinger-test/rc"),
+        ("RUSTC_WRAPPER", "/nonexistent-zwinger-test/w"),
+        ("GIT_SSH_COMMAND", "ssh -v"),
+        ("ZWINGER_TEST_ORDINARY", "1"),
+    ];
+    let o = sc.run_env(&["/usr/bin/env"], &env);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(!lines.iter().any(|l| l.starts_with("BASH_ENV=")), "{out}");
+    assert!(
+        !lines.iter().any(|l| l.starts_with("RUSTC_WRAPPER=")),
+        "{out}"
+    );
+    assert!(
+        lines.contains(&"GIT_SSH_COMMAND=ssh -v"),
+        "kept by env_keep: {out}"
+    );
+    assert!(
+        lines.contains(&"ZWINGER_TEST_ORDINARY=1"),
+        "not on the list: {out}"
+    );
+    let err = String::from_utf8_lossy(&o.stderr);
+    // Every planted scrubbed variable is named; cargo sets DYLD_FALLBACK_LIBRARY_PATH for tests
+    // on macOS, which is removed too.
+    let removed = err.split("; environment removed: ").nth(1).unwrap_or("");
+    for v in ["BASH_ENV", "RUSTC_WRAPPER"] {
+        assert!(
+            removed.split(", ").any(|r| r.trim() == v),
+            "{v} not named: {err}"
+        );
+    }
+    assert!(
+        !removed.contains("GIT_SSH_COMMAND"),
+        "kept by env_keep: {err}"
+    );
+}

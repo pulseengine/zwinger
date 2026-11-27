@@ -111,9 +111,11 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         plan.skipped.len(),
     );
     events::end(pending, &ev);
-    eprintln!("{}", enf.summary(&p.name, &plan));
+    let mut command = std::process::Command::new(cmd);
+    let removed = scrub_env(&mut command, &p.env_keep);
+    eprintln!("{}{removed}", enf.summary(&p.name, &plan));
     // Only returns on failure; the session is already confined either way.
-    let err = std::process::Command::new(cmd)
+    let err = command
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
         .env("ZWINGER_ABI", enf.abi.to_string())
@@ -223,9 +225,11 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
         plan.skipped.len(),
     );
     events::end(pending, &ev);
-    eprintln!("{}", zwinger::macos::summary(p, &plan));
+    let mut command = std::process::Command::new(cmd);
+    let removed = scrub_env(&mut command, &p.env_keep);
+    eprintln!("{}{removed}", zwinger::macos::summary(p, &plan));
     // Only returns on failure; the session is already confined either way.
-    let err = std::process::Command::new(cmd)
+    let err = command
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
         .env(zwinger::grants::VAR, &grants_json)
@@ -251,6 +255,24 @@ fn check(p: &Profile) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => refuse(&e),
+    }
+}
+
+/// Remove the scrubbed variables (src/env.rs) that are set and not kept by the profile, and
+/// return the startup line's note naming them ("" when nothing was removed).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn scrub_env(command: &mut std::process::Command, keep: &[String]) -> String {
+    let names: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .collect();
+    let removed = zwinger::env::to_remove(names.iter().map(String::as_str), keep);
+    for name in &removed {
+        command.env_remove(name);
+    }
+    if removed.is_empty() {
+        String::new()
+    } else {
+        format!("; environment removed: {}", removed.join(", "))
     }
 }
 

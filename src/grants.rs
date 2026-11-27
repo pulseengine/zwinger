@@ -2,7 +2,7 @@
 //!
 //! A shell or agent inside the session reads it to know what it may touch: kapsel maps `read`
 //! to read-only and `write` to read-write WASI preopens at the same paths (seam
-//! pulseengine/bazel-file-ops-component#140), and any agent can use it to explain a denial. It
+//! pulseengine/kapsel#140), and any agent can use it to explain a denial. It
 //! is information, not enforcement: the kernel sandbox enforces the same plan whether or not
 //! the command reads this.
 //!
