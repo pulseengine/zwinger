@@ -985,3 +985,52 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-023
+
+  - id: REQ-ZW-024
+    type: requirement
+    title: "zwinger refuses a profile or zwinger executable that resolves inside a write grant"
+    status: approved
+    description: >
+      check and run refuse (exit 78, and run writes a refusal record) when the profile file or
+      the running zwinger executable lies inside a write or write_if_present grant, compared as
+      stated and as resolved, and when the profile file has more than one hard link. Both are
+      read again by the next run with the operator's full authority, so the session must not be
+      able to change them.
+
+  - id: VER-ZW-012
+    type: verification
+    title: "A profile inside a write grant is refused; outside, it runs"
+    status: implemented
+    method: test
+    description: >
+      src/inputs.rs unit tests (inside refused, outside accepted; a symlink resolving inside and
+      a symlink stated inside both refused; a second hard link refused; a profile swapped after it
+      was read refused; the hash is of the bytes parsed). tests/cli.rs: check refuses a profile
+      inside its own write grant and accepts the same profile outside it, and refuses zwinger
+      invoked through a symlink inside a write grant while the same check by its own path passes.
+      tests/linux.rs and tests/macos.rs: run refuses such a profile without running the command,
+      and the same command runs when the profile lies outside the grant.
+    links:
+      - type: verifies
+        target: REQ-ZW-024
+
+  - id: DD-ZW-022
+    type: design-decision
+    title: "What the next run trusts is checked against the write grants before confinement"
+    status: approved
+    description: >
+      Found in the STPA-Sec pass, 2026-11-27; shipped as a security fix.
+    decision: >
+      src/inputs.rs compares the profile file and std::env::current_exe() against every write
+      and write_if_present entry, each stated and resolved, before anything is confined, the
+      same way the events directory is checked. The profile must also have a single hard link.
+      The executable gets no hard-link rule: build tools hard-link their outputs, and the
+      session cannot create a cross-directory link (Landlock withholds REFER, Seatbelt refuses
+      links to files it cannot read).
+    rationale: >
+      zwinger can only promise a session's bounds if the session cannot choose the bounds of the
+      run after it. Refusing is fail-closed and needs no new kernel feature; the operator moves
+      the file out of the grant.
+    links:
+      - type: satisfies
+        target: REQ-ZW-024

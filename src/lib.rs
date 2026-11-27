@@ -14,6 +14,7 @@
 
 pub mod events;
 pub mod grants;
+pub mod inputs;
 pub mod linux;
 pub mod macos;
 pub mod pathrules;

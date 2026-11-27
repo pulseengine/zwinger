@@ -45,3 +45,7 @@ The command zwinger runs gets three environment variables:
 ```
 
 `ZWINGER_GRANTS` is information for the command. A capability shell such as kapsel maps it to its preopened directories, and an agent can use it to explain a denial. The kernel sandbox enforces the same plan whether or not the command reads it. If a resolved path is not valid UTF-8, JSON can't carry it, so zwinger refuses to run (exit 78).
+
+## Where the profile and zwinger may live
+
+`check` and `run` refuse (exit 78) when the profile file or the zwinger executable lies inside a write grant, whether by its path or through a symlink. They also refuse zwinger started through a symlink or a PATH directory inside a write grant, and a profile file with more than one hard link. The profile is read once, so the file checked is the file parsed. The next run reads both again with your full authority, so the session must not be able to change them. Keep profiles in a directory the session can only read, for example `/etc/zwinger`, and install zwinger outside every write grant, for example `/usr/local/bin`. A runner's `.cargo/bin` is not such a place if the runner grants write on its `.cargo`.

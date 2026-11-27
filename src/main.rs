@@ -8,10 +8,15 @@ const USAGE: &str = "usage: zwinger check PROFILE\n       zwinger explain PROFIL
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("check") if args.len() == 2 => match Profile::load(Path::new(&args[1])) {
-            Ok(p) => check(&p),
-            Err(e) => refuse(&e.to_string()),
-        },
+        Some("check") if args.len() == 2 => {
+            match zwinger::inputs::open_profile(Path::new(&args[1])) {
+                Ok(o) => match zwinger::inputs::check(&o, Path::new(&args[1])) {
+                    Ok(()) => check(&o.profile),
+                    Err(e) => refuse(&e),
+                },
+                Err(e) => refuse(&e),
+            }
+        }
         Some("explain") if args.len() == 3 => match Profile::load(Path::new(&args[1])) {
             Ok(p) => match zwinger::linux::plan(&p) {
                 Ok(plan) => {
@@ -26,12 +31,12 @@ fn main() -> ExitCode {
         },
         Some("run") if args.len() >= 4 && args[2] == "--" => {
             let path = Path::new(&args[1]);
-            match Profile::load(path) {
-                Ok(p) => run(&p, path, &args[3], &args[4..]),
+            match zwinger::inputs::open_profile(path) {
+                Ok(o) => run(&o, path, &args[3], &args[4..]),
                 Err(e) => {
                     let sha = events::sha256_file(path);
                     events::end(events::begin(&[]), &Event::refused(None, sha, "profile"));
-                    refuse(&e.to_string())
+                    refuse(&e)
                 }
             }
         }
@@ -52,7 +57,8 @@ fn main() -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
+fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
+    let p = &opened.profile;
     use std::os::unix::process::CommandExt;
     use zwinger::profile::NetworkMode;
     // Open the event file and hash the profile before confining: afterwards neither path is
@@ -63,7 +69,16 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
         .filter_map(|(_, w)| w.canonicalize().ok())
         .collect();
     let pending = events::begin(&grants);
-    let sha = events::sha256_file(path);
+    let sha = Some(opened.sha256.clone());
+    // The profile and this executable are what the next run trusts: refuse them inside a
+    // write grant (REQ-ZW-024).
+    if let Err(e) = zwinger::inputs::check(opened, path) {
+        events::end(
+            pending,
+            &Event::refused(Some(p.name.clone()), sha, "profile"),
+        );
+        return refuse(&e);
+    }
     let (enf, plan) = match zwinger::linux::confine(p) {
         Ok(c) => c,
         Err(e) => {
@@ -113,7 +128,7 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn run(_: &Profile, _: &Path, _: &str, _: &[String]) -> ExitCode {
+fn run(_: &zwinger::inputs::Opened, _: &Path, _: &str, _: &[String]) -> ExitCode {
     // Fail closed: never run a command unconfined because no backend exists yet.
     refuse("no enforcement backend on this platform yet; refusing to run unconfined")
 }
@@ -155,7 +170,8 @@ fn check(p: &Profile) -> ExitCode {
 
 /// macOS (Seatbelt prototype): apply the policy, then exec, as on Linux.
 #[cfg(target_os = "macos")]
-fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
+fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
+    let p = &opened.profile;
     use std::os::unix::process::CommandExt;
     use zwinger::profile::NetworkMode;
     // As on Linux: open the event file and hash the profile before confining.
@@ -164,7 +180,16 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
         .filter_map(|(_, w)| w.canonicalize().ok())
         .collect();
     let pending = events::begin(&grants);
-    let sha = events::sha256_file(path);
+    let sha = Some(opened.sha256.clone());
+    // The profile and this executable are what the next run trusts: refuse them inside a
+    // write grant (REQ-ZW-024).
+    if let Err(e) = zwinger::inputs::check(opened, path) {
+        events::end(
+            pending,
+            &Event::refused(Some(p.name.clone()), sha, "profile"),
+        );
+        return refuse(&e);
+    }
     let plan = match zwinger::macos::confine(p) {
         Ok(plan) => plan,
         Err(e) => {
