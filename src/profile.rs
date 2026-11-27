@@ -136,6 +136,24 @@ pub fn within(inner: &Path, outer: &Path) -> bool {
     crate::pathrules::within_bytes(inner.as_os_str().as_bytes(), outer.as_os_str().as_bytes())
 }
 
+/// `~/rest` becomes the invoking user's home joined with `rest`. A bare `~` is YAML's null and
+/// stays as written, so it is refused as not absolute. Nothing else is expanded.
+fn expand_home(p: &Path) -> Result<PathBuf, String> {
+    match p.strip_prefix("~") {
+        Ok(rest) if p.as_os_str().len() > 1 => Ok(home_dir()?.join(rest)),
+        _ => Ok(p.to_path_buf()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+use crate::linux::home_dir;
+#[cfg(target_os = "macos")]
+use crate::macos::home_dir;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn home_dir() -> Result<PathBuf, String> {
+    Err("~: no home directory lookup on this platform".into())
+}
+
 impl Profile {
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
         let text = std::fs::read_to_string(path).map_err(|e| ProfileError::Read(path.into(), e))?;
@@ -156,8 +174,10 @@ impl Profile {
             &mut p.noexec,
             &mut p.unix_socket_dirs,
         ] {
-            for path in list.iter_mut() {
-                *path = normalize(path);
+            for entry in list.iter_mut() {
+                let expanded =
+                    expand_home(entry).map_err(|e| ProfileError::Invalid(path.into(), e))?;
+                *entry = normalize(&expanded);
             }
         }
         p.validate()
@@ -372,6 +392,22 @@ network:
         for t in ["name:\n", "name: ~\n", "name: null\n", "name: NULL\n"] {
             assert!(invalid(t), "{t:?}");
         }
+    }
+
+    // rivet: verifies REQ-ZW-031
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_leading_tilde_is_the_users_home_from_the_password_database() {
+        let home = home_dir().unwrap();
+        assert!(home.is_absolute(), "{}", home.display());
+        let p = parse("name: x\nwrite: [\"~/repo\"]\ndeny_read: [\"~/.ssh\"]\n").unwrap();
+        assert_eq!(p.write, vec![home.join("repo")]);
+        assert_eq!(p.deny_read, vec![home.join(".ssh")]);
+        // Not expanded: another user's home, the environment, a tilde later in the path.
+        assert!(invalid("name: x\nread: [\"~root/x\"]\n"));
+        assert!(invalid("name: x\nread: [\"$HOME/x\"]\n"));
+        let p = parse("name: x\nread: [\"/a/~/b\"]\n").unwrap();
+        assert_eq!(p.read, vec![PathBuf::from("/a/~/b")]);
     }
 
     #[test]

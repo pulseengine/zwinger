@@ -610,6 +610,37 @@ mod enforce {
     }
 }
 
+/// The invoking user's home directory from the password database (`getpwuid_r`), never from
+/// `$HOME`: a profile's `~/` must not follow the caller's environment (REQ-ZW-031).
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn home_dir() -> Result<std::path::PathBuf, String> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 16 * 1024];
+    // SAFETY: an all-zero passwd is a valid out-parameter; buf outlives every use of the
+    // strings getpwuid_r points into it, and result is checked before pw is read.
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result: *mut libc::passwd = std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pw,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() || pw.pw_dir.is_null() {
+        return Err("~: no home directory for this user in the password database".into());
+    }
+    // SAFETY: pw_dir is a NUL-terminated string inside buf, checked non-null above.
+    let dir = unsafe { CStr::from_ptr(pw.pw_dir) };
+    Ok(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        dir.to_bytes(),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
