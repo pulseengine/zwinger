@@ -290,14 +290,13 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
                 l.stated.display()
             ));
         }
-        if let Some(d) = p
-            .deny_read
-            .iter()
-            .find(|d| crate::profile::within(&resolve(d), &l.resolved))
-        {
+        if let Some(d) = p.deny_read.iter().find(|d| {
+            let d = resolve(d);
+            crate::profile::within(&d, &l.resolved) || crate::profile::within(&l.resolved, &d)
+        }) {
             return Err(format!(
-                "list: {} contains deny_read {}, whose names a listing would show; narrow the \
-                 list entry or drop the deny",
+                "list: {} overlaps deny_read {}, whose names a listing would show; list outside \
+                 every deny_read tree",
                 l.stated.display(),
                 d.display()
             ));
@@ -1119,7 +1118,14 @@ mod tests {
             "list: [\"@/home\"]\ndeny_read: [\"@/home/.ssh\"]\n",
         ))
         .unwrap_err();
-        assert!(e.contains("contains deny_read"), "{e}");
+        assert!(e.contains("overlaps deny_read"), "{e}");
+        // The other direction: a list entry inside a deny_read tree.
+        let e = plan(&profile(
+            &t,
+            "list: [\"@/home/.ssh\"]\ndeny_read: [\"@/home\"]\n",
+        ))
+        .unwrap_err();
+        assert!(e.contains("overlaps deny_read"), "{e}");
     }
 
     #[test]

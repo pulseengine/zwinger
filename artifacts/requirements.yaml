@@ -1287,8 +1287,8 @@ artifacts:
     description: >
       list names directories the session may list (Landlock ReadDir on Linux; Seatbelt
       file-read-data on directory vnodes on macOS), covering every directory beneath them, with
-      no file becoming readable. Each entry must be a directory, and an entry containing a
-      deny_read path is refused (exit 78). The GitHub Actions runner refuses to start unless it
+      no file becoming readable. Each entry must be a directory, and an entry that overlaps a
+      deny_read tree, containing it or lying inside it, is refused (exit 78). The GitHub Actions runner refuses to start unless it
       can list its root and every ancestor; the first confined-runner canary stopped there.
 
   - id: DD-ZW-028
@@ -1326,8 +1326,8 @@ artifacts:
       _work is writable, copying run-helper.sh into the home fails, a sibling home's file is
       listable by name and not readable. The control drops list and fails at the ancestor
       listing, as the canary did. src/linux.rs and src/macos.rs
-      list_takes_directories_without_a_deny_read_inside: a file and an entry containing a
-      deny_read are refused; the macOS rule is limited to directory vnodes.
+      list_takes_directories_without_a_deny_read_inside: a file and an entry overlapping a
+      deny_read in either direction are refused; the macOS rule is limited to directory vnodes.
     links:
       - type: verifies
         target: REQ-ZW-046

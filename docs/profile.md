@@ -41,7 +41,7 @@ On Linux a profile with `allow_loopback_ports` is refused (exit 78): Landlock fi
 
 ## Listing without reading
 
-`list` names directories the session may list, with no file in them becoming readable. It is for programs that check, before they start, that they can list their root and every directory above it, as the GitHub Actions runner does. On Linux, Landlock's listing right covers a directory and every directory beneath it, and on macOS the rule matches the same tree. So `list: [/]` lets the session list directory names anywhere its Unix permissions allow. Each entry must be a directory, and an entry that contains a `deny_read` path is refused, because a listing would show the names `deny_read` hides.
+`list` names directories the session may list, with no file in them becoming readable. It is for programs that check, before they start, that they can list their root and every directory above it, as the GitHub Actions runner does. On Linux, Landlock's listing right covers a directory and every directory beneath it, and on macOS the rule matches the same tree. So `list: [/]` lets the session list directory names anywhere its Unix permissions allow. Each entry must be a directory, and an entry that overlaps a `deny_read` tree, containing it or lying inside it, is refused, because a listing would show the names `deny_read` hides.
 
 ## What the session receives
 
