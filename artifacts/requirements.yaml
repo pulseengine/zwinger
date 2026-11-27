@@ -1004,8 +1004,10 @@ artifacts:
     method: test
     description: >
       src/inputs.rs unit tests (inside refused, outside accepted; a symlink resolving inside and
-      a symlink stated inside both refused; a second hard link refused). tests/cli.rs: check
-      refuses a profile inside its own write grant and accepts the same profile outside it.
+      a symlink stated inside both refused; a second hard link refused; a profile swapped after it
+      was read refused; the hash is of the bytes parsed). tests/cli.rs: check refuses a profile
+      inside its own write grant and accepts the same profile outside it, and refuses zwinger
+      invoked through a symlink inside a write grant while the same check by its own path passes.
       tests/linux.rs and tests/macos.rs: run refuses such a profile without running the command,
       and the same command runs when the profile lies outside the grant.
     links:
