@@ -30,3 +30,18 @@ network:
 Profiles are read by [rivet-yaml](https://github.com/pulseengine/rivet/tree/main/rivet-yaml), the YAML parser rivet uses for every artifact file. It refuses duplicate keys, tags and multi-document files, and reads `yes`/`on` as strings, so a YAML 1.1 boolean is refused rather than guessed.
 
 Nothing outside `read` and `write` is accessible. A `read` entry inside a `deny_read` tree is a stated exception (one public key in a secrets directory). A `write` inside a denied tree, the same path both allowed and denied, a relative or `..` path, an unknown or duplicate key, a null name or a wildcard host is refused when the profile loads.
+
+## What the session receives
+
+The command zwinger runs gets three environment variables:
+
+- `ZWINGER_PROFILE`: the profile's name;
+- `ZWINGER_ABI`: the Landlock ABI in use (Linux only);
+- `ZWINGER_GRANTS`: the plan zwinger enforces, as JSON with schema `zwinger.grants.v1`. It holds the resolved `read` and `write` grants, `deny_read`, `deny_write` and `noexec`, and `exec`, which stays empty until profiles get an exec allowlist. Every path is absolute.
+
+```json
+{"schema":"zwinger.grants.v1","read":["/usr","/home/me/repo"],"write":["/home/me/repo/target"],
+ "deny_read":["/home/me/repo/.env"],"deny_write":[],"noexec":[],"exec":[]}
+```
+
+`ZWINGER_GRANTS` is information for the command. A capability shell such as kapsel maps it to its preopened directories, and an agent can use it to explain a denial. The kernel sandbox enforces the same plan whether or not the command reads it. If a resolved path is not valid UTF-8, JSON can't carry it, so zwinger refuses to run (exit 78).

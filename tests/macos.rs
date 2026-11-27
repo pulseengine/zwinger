@@ -606,3 +606,29 @@ fn hard_links_cannot_give_an_unreadable_file_a_readable_path() {
         );
     }
 }
+
+// rivet: verifies REQ-ZW-021
+#[test]
+fn the_session_receives_its_plan_in_zwinger_grants() {
+    let sc = Scene::new("deny_read: [\"@/r/private\"]\nnoexec: [\"@/w\"]\n");
+    let o = sc.run(&["/usr/bin/printenv", zwinger::grants::VAR]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).expect("ZWINGER_GRANTS is JSON");
+    assert_eq!(v["schema"], zwinger::grants::SCHEMA);
+    let has = |key: &str, p: PathBuf| {
+        let p = p.canonicalize().unwrap();
+        let list = v[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} is a list"));
+        assert!(
+            list.iter().any(|e| e.as_str() == p.to_str()),
+            "{key} lacks {}: {v}",
+            p.display()
+        );
+    };
+    has("read", sc.path("r"));
+    has("write", sc.path("w"));
+    has("deny_read", sc.path("r/private"));
+    has("noexec", sc.path("w"));
+    assert_eq!(v["exec"], serde_json::json!([]));
+}

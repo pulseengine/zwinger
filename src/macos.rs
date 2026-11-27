@@ -429,6 +429,19 @@ pub fn preflight(p: &Profile) -> Result<(Plan, String), String> {
     Ok((plan, policy))
 }
 
+/// The plan as `ZWINGER_GRANTS` carries it, with every path as the policy resolved it.
+pub fn session_grants(plan: &Plan) -> crate::grants::Grants {
+    let resolved = |v: &[Denied]| v.iter().map(|d| d.resolved.clone()).collect();
+    crate::grants::Grants {
+        read: plan.read.iter().map(|g| g.resolved.clone()).collect(),
+        write: plan.write.iter().map(|g| g.resolved.clone()).collect(),
+        deny_read: resolved(&plan.deny_read),
+        deny_write: resolved(&plan.deny_write),
+        noexec: resolved(&plan.noexec),
+        exec: Vec::new(),
+    }
+}
+
 /// What the profile leaves unconfined, for the startup line.
 pub fn not_enforced(p: &Profile) -> Vec<&'static str> {
     let mut gaps = Vec::new();

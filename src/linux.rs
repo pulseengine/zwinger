@@ -828,6 +828,29 @@ pub(crate) fn seccomp_spec(
     RET_ALLOW
 }
 
+/// The plan as `ZWINGER_GRANTS` carries it. Linux refuses a denial inside a grant, so the
+/// profile's denials lie outside every grant; they are passed resolved for the command's
+/// information.
+pub fn session_grants(profile: &Profile, plan: &Plan) -> crate::grants::Grants {
+    use crate::grants::resolve_or_stated;
+    crate::grants::Grants {
+        read: plan.read.iter().map(|g| g.resolved.clone()).collect(),
+        write: plan.write.iter().map(|g| g.resolved.clone()).collect(),
+        deny_read: profile
+            .deny_read
+            .iter()
+            .map(|p| resolve_or_stated(p))
+            .collect(),
+        deny_write: profile
+            .deny_write
+            .iter()
+            .map(|p| resolve_or_stated(p))
+            .collect(),
+        noexec: plan.noexec.clone(),
+        exec: Vec::new(),
+    }
+}
+
 /// Everything `confine` decides before it changes the process: the path plan, the syscall table
 /// and what this kernel can enforce. `zwinger check` runs it, so `check` refuses whatever `run`
 /// would refuse, including a granted path that does not exist yet.

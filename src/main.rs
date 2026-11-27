@@ -72,6 +72,15 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
             return refuse(&e);
         }
     };
+    // The plan for the command (ZWINGER_GRANTS). A plan JSON cannot carry is refused, before
+    // anything is exec'd.
+    let grants_json = match zwinger::linux::session_grants(p, &plan).to_json() {
+        Ok(g) => g,
+        Err(e) => {
+            events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+            return refuse(&e);
+        }
+    };
     let network = match enf.network {
         NetworkMode::None => "none",
         NetworkMode::Unfiltered => "unfiltered",
@@ -93,6 +102,7 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
         .env("ZWINGER_ABI", enf.abi.to_string())
+        .env(zwinger::grants::VAR, &grants_json)
         .exec();
     eprintln!("zwinger: cannot exec {cmd}: {err}");
     ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {
@@ -163,6 +173,13 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
             return refuse(&e);
         }
     };
+    let grants_json = match zwinger::macos::session_grants(&plan).to_json() {
+        Ok(g) => g,
+        Err(e) => {
+            events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+            return refuse(&e);
+        }
+    };
     let network = match p.network.mode {
         NetworkMode::None => "none",
         NetworkMode::Unfiltered => "unfiltered",
@@ -186,6 +203,7 @@ fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
     let err = std::process::Command::new(cmd)
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
+        .env(zwinger::grants::VAR, &grants_json)
         .exec();
     eprintln!("zwinger: cannot exec {cmd}: {err}");
     ExitCode::from(if err.kind() == std::io::ErrorKind::NotFound {

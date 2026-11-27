@@ -13,6 +13,7 @@
 #![deny(unsafe_code)]
 
 pub mod events;
+pub mod grants;
 pub mod linux;
 pub mod macos;
 pub mod pathrules;

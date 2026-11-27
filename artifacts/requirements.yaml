@@ -834,8 +834,10 @@ artifacts:
       Owner decision, 2026-11-27, over WASM tools beside bash and a tighter native-only setup.
     decision: >
       The shell has its own WIT (a command interface: args, env, streams, exit code), its tools
-      are composed into it with wac, and native execution is a narrow host import zwinger
-      provides, outside the shell's own authority. The parser is a POSIX subset written in
+      are composed into it with wac, and native execution is a narrow host interface outside
+      the shell's own authority. That interface lives in kiln, so gale can use it too
+      (bazel-file-ops-component#140, owner decision 2026-11-27); zwinger supplies policy only,
+      through ZWINGER_GRANTS, and carries no WIT. The parser is a POSIX subset written in
       Rust, so refusing everything outside it is a testable property. Advice from the
       bazel-file-ops-component session, 2026-11-27.
     rationale: >
@@ -905,3 +907,47 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-019
+
+  - id: REQ-ZW-021
+    type: requirement
+    title: "The confined command receives its plan in ZWINGER_GRANTS"
+    status: approved
+    description: >
+      Every command zwinger runs gets ZWINGER_GRANTS, JSON with schema zwinger.grants.v1: the
+      resolved read and write grants, deny_read, deny_write and noexec, and exec (empty until
+      the exec allowlist exists). Paths are absolute. A plan JSON cannot carry (a path that is
+      not UTF-8) is refused before exec. The variable is information for the command, such as
+      kapsel's preopens or an agent explaining a denial; the kernel sandbox enforces the same
+      plan whether or not it is read.
+
+  - id: DD-ZW-020
+    type: design-decision
+    title: "The plan reaches the command as one JSON environment variable, set for every command"
+    status: approved
+    description: >
+      Adopted in kapsel's seam (bazel-file-ops-component#140) and by the owner, 2026-11-27.
+    decision: >
+      src/grants.rs builds the value from each backend's plan (linux::session_grants,
+      macos::session_grants), and run sets it with ZWINGER_PROFILE. It is set for every
+      command, not only kapsel.
+    rationale: >
+      An environment variable is the channel zwinger already uses, needs no parser beyond JSON
+      in the reader, and carries the plan after zwinger has resolved and checked it, so a reader
+      never re-derives paths from the profile.
+    links:
+      - type: satisfies
+        target: REQ-ZW-021
+
+  - id: VER-ZW-009
+    type: verification
+    title: "ZWINGER_GRANTS carries the plan, on Linux and macOS"
+    status: implemented
+    method: test
+    description: >
+      src/grants.rs unit tests (every list and the schema in the JSON, no other key; a non-UTF-8
+      path refused; absent paths kept as stated). tests/linux.rs and tests/macos.rs
+      the_session_receives_its_plan_in_zwinger_grants: a confined printenv shows the schema, the
+      resolved read, write, deny_read and noexec entries, and an empty exec list.
+    links:
+      - type: verifies
+        target: REQ-ZW-021
