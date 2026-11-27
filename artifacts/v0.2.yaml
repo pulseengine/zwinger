@@ -1,0 +1,202 @@
+# v0.2.0: usability and adoption. Scope decided by the owner on 2026-11-27: adopters are the CI
+# runner fleet, Mac agent sessions and Linux agents; protect: on both platforms; learn mode as a
+# prototype; the Mac session shape decided on its own issue before building.
+artifacts:
+  - id: DD-ZW-026
+    type: design-decision
+    title: "Each release is usability-tested by an agent with no prior context"
+    status: approved
+    release: v0.2.0
+    description: >
+      The verb v0.2 serves: let anyone confine an agent without learning sandbox internals. The
+      method is borrowed from usability testing: a participant with no prior exposure performs
+      fixed tasks while time, failed attempts and unhelpful messages are counted.
+    decision: >
+      Before each tag, a fresh agent given only the release's README and docs goes from install
+      to a confined agent session and to a confined CI job. It records minutes, failed commands
+      and every message that did not say what to do. The counts go in the release notes; the
+      first baseline (2026-11-27, v0.1.2) reached a passing check in about five minutes and could
+      not reach a working agent session, because no document says what an agent needs.
+      Stretch target for v0.2: every refusal names a fix (REQ-ZW-033).
+    rationale: >
+      zwinger's users are people and agents writing profiles; a missing or wrong grant shows up
+      only as a bare EPERM or EACCES in the session. Counting friction with a fresh participant
+      measures what review by the authors cannot.
+    links:
+      - type: satisfies
+        target: REQ-ZW-033
+      - type: satisfies
+        target: REQ-ZW-030
+
+  - id: REQ-ZW-028
+    type: requirement
+    title: "Releases ship a macOS binary held to the Linux binaries' bar"
+    status: approved
+    release: v0.2.0
+    description: >
+      Each release publishes an aarch64-apple-darwin binary, listed in the cosign-signed
+      SHA256SUMS.txt and covered by SLSA build provenance, and the release job asserts that the
+      built binary reports the tag's version. docs/releases.md says how to verify it.
+
+  - id: REQ-ZW-029
+    type: requirement
+    title: "zwinger is installable from the org toolchain channel and crates.io"
+    status: approved
+    release: v0.2.0
+    description: >
+      Each release is deposited in the varve layer and published to crates.io from CI, so
+      runners and agent hosts install a pinned, verified zwinger rather than a binary copied by
+      hand.
+
+  - id: REQ-ZW-030
+    type: requirement
+    title: "Built-in presets write a working profile for an agent session or a CI runner"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger init --preset NAME [--var key=value ...] writes a profile from a preset compiled
+      into zwinger: agent-macos, agent-linux and github-runner at least. Each preset passes
+      zwinger check on its platform and is run end to end in CI with a workload of its kind (git,
+      a cargo build, an HTTPS request for an agent; a job for a runner). Presets replace
+      hand-copied templates, so a deployment renders from zwinger's own source.
+
+  - id: REQ-ZW-031
+    type: requirement
+    title: "Profiles expand ~ and explicitly passed variables, never the ambient environment"
+    status: approved
+    release: v0.2.0
+    description: >
+      A path may start with ~ (the invoking user's home) or contain {{name}} for a variable given
+      with --var. An undefined variable is refused (exit 78). Environment variables are not
+      expanded, so the caller's environment cannot widen a grant. check and the startup line show
+      the expanded paths.
+
+  - id: REQ-ZW-032
+    type: requirement
+    title: "A profile can be named instead of given by path"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger run NAME -- CMD and zwinger check NAME look up NAME.yaml in ~/.config/zwinger and
+      then /etc/zwinger, and say which file they used. The REQ-ZW-024 checks apply to the file
+      found. docs/profile.md names the user-level location.
+
+  - id: REQ-ZW-033
+    type: requirement
+    title: "Every refusal says what to do"
+    status: approved
+    release: v0.2.0
+    description: >
+      Each message that refuses a profile or a run names the entry or input at fault and a
+      change that resolves it: for example read_if_present for a missing path, "globs are not
+      supported" for a wildcard, "zwinger is already inside a sandbox" when sandbox_init fails
+      for that reason, and the missing -- in run. A test enumerates every refusal path and fails
+      on one without a remedy. check groups repeated warnings (sockets by directory).
+
+  - id: REQ-ZW-034
+    type: requirement
+    title: "check has machine-readable output and the audits a fleet rollout needs"
+    status: approved
+    release: v0.2.0
+    description: >
+      check --format json emits the plan, warnings and refusal with stable field names and
+      documented exit codes. --strict also lists skipped *_if_present paths. --env-file FILE
+      lists the variables run would remove from that environment. --user NAME (Linux) reports
+      read and write grants that user cannot traverse.
+
+  - id: REQ-ZW-035
+    type: requirement
+    title: "zwinger diff shows how two profiles' plans differ"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger diff OLD NEW prints the grants, denials, network and socket settings that differ
+      between the two resolved plans, so a profile change can be reviewed by its effect rather
+      than its text.
+
+  - id: REQ-ZW-036
+    type: requirement
+    title: "explain answers with the backend's own rules and errors"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger explain uses the plan and error of the platform it runs on (EPERM under Seatbelt,
+      EACCES or EXDEV under Landlock), names a deny_read or deny_write entry that matches even
+      when no grant covers the path, and refuses a relative path.
+
+  - id: REQ-ZW-037
+    type: requirement
+    title: "A confined session can find out why an access was denied"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger why PATH, run inside the session, answers from ZWINGER_GRANTS which rule decides
+      PATH and what profile change would allow it, without reading the profile file. docs carry
+      a short agent-neutral snippet an agent's instruction file can include: on EPERM or EACCES
+      under ZWINGER_PROFILE, run zwinger why on the path and report the answer.
+
+  - id: REQ-ZW-038
+    type: requirement
+    title: "Learn mode reports would-be denials, explicitly and never by default"
+    status: approved
+    release: v0.2.0
+    description: >
+      zwinger run --learn PROFILE -- CMD runs with the profile's rules in report-only form and
+      writes each would-be denial with the profile line that would allow it. It is never the
+      default. The startup line and the event record list "learn mode" as not enforced. On macOS
+      it uses Seatbelt report rules; on Linux it needs Landlock audit (ABI 7) and is refused
+      below it.
+
+  - id: REQ-ZW-039
+    type: requirement
+    title: "protect: keeps named paths inside a write tree read-only, on Linux and macOS"
+    status: approved
+    release: v0.2.0
+    description: >
+      protect: lists paths inside write trees (.git, .git/hooks, .env) that the session may read
+      but not write, rename, remove or hard-link out of. macOS uses Seatbelt path rules (measured
+      to hold, tests/macos_git.rs). Linux uses read-only bind mounts in a mount namespace, which
+      also resist rename. Where the mechanism is unavailable the profile is refused (exit 78),
+      never run with protect: ignored.
+
+  - id: REQ-ZW-040
+    type: requirement
+    title: "Mac agent sessions run under zwinger"
+    status: draft
+    release: v0.2.0
+    description: >
+      An agent session on macOS runs under zwinger. The shape (the whole agent process under
+      zwinger, or zwinger per command, and how it coexists with an agent's own sandbox, since a
+      second Seatbelt sandbox_init fails) is decided on its design issue before building,
+      covering network to the model API, loopback ports for local services, keychain access and
+      the agent's own configuration writes.
+
+  - id: REQ-ZW-041
+    type: requirement
+    title: "Linux agent sessions and bench tools have a preset and a runbook"
+    status: approved
+    release: v0.2.0
+    description: >
+      The agent-linux preset and docs/agents.md let an agent session or a bench tool on a Linux
+      host (including a Raspberry Pi) run under zwinger, with the steps from install to a
+      confined session tested in CI.
+
+  - id: REQ-ZW-042
+    type: requirement
+    title: "Event records carry the zwinger version and the names of removed variables"
+    status: approved
+    release: v0.2.0
+    description: >
+      Each record adds zwinger_version and env_removed (variable names only, never values), and
+      never contains paths from inside the session's write trees beyond the grants themselves.
+
+  - id: REQ-ZW-043
+    type: requirement
+    title: "Every CI runner in the fleet runs its jobs under zwinger"
+    status: approved
+    release: v0.2.0
+    description: >
+      All self-hosted runners run under zwinger with profiles rendered from the github-runner
+      preset, after the runner19 canary passes the confined-runner controls. The deployment
+      belongs to smithy; zwinger's part is the preset, check --format json and diff. Held at
+      implemented until smithy reports the fleet confined.
