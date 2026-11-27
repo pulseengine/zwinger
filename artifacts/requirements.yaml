@@ -145,6 +145,20 @@ artifacts:
       would still cover it. execve of a file beneath the tree then fails with EACCES. Not
       covered: code run without execve, by an interpreter reading a script (sh script) or by the
       dynamic loader mapping a binary (ld.so binary), which Landlock does not see.
+  - id: REQ-ZW-014
+    type: requirement
+    title: "Each run reports its confinement to warte, without paths"
+    status: approved
+    description: >
+      Every zwinger run writes one versioned event (schema zwinger.event.v1) for warte's probe.
+      It carries the profile name and sha256, the verdict, a refusal category (profile, path,
+      carve-out, noexec, network, kernel, backend), the Landlock ABI, the network mode, the
+      not-enforced list and grant counts, and no path, argument or command line. The file is
+      opened before the session is confined, so the session needs no grant for the events
+      directory and cannot write there. Writing events never changes whether a session is
+      confined or refused: a failure is reported on stderr. ZWINGER_EVENTS_DIR overrides the
+      directory (empty turns events off). The default is $XDG_STATE_HOME/warte/zwinger, else
+      ~/.local/state/warte/zwinger.
 
   - id: DD-ZW-001
     type: design-decision
@@ -328,6 +342,25 @@ artifacts:
     links:
       - type: satisfies
         target: REQ-ZW-013
+  - id: DD-ZW-009
+    type: design-decision
+    title: "Events go to warte's probe as files in its state dir"
+    status: approved
+    description: >
+      pulseengine/warte#223, option A (owner decision 2026-11-27): zwinger writes event files,
+      and warte's probe collects them and ships them with its own identity, relay-ccsds framing
+      and relay-sec sealing (later relay-bp store-and-forward, pulseengine/relay#626).
+    decision: >
+      One JSON file per run, mode 0600 in a 0700 directory, created before confinement and
+      written through the open descriptor after it. Only the fields in warte#223's table. A
+      refusal is reduced to its category, because refusal texts name paths.
+    rationale: >
+      zwinger then needs no token, network, retry logic or crypto of its own. The probe already
+      collects the activity hook's files the same way, and an agent session keeps no network
+      capability it would only need for reporting.
+    links:
+      - type: satisfies
+        target: REQ-ZW-014
 
   - id: VER-ZW-005
     type: verification

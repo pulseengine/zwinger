@@ -176,7 +176,7 @@ jobs:
       - name: Mutate
         run: |
           set -o pipefail
-          cargo mutants --no-shuffle -j 2 -f src/profile.rs -f src/linux.rs | tee mutants.log
+          cargo mutants --no-shuffle -j 2 -f src/profile.rs -f src/linux.rs -f src/events.rs | tee mutants.log
           grep -Eq '^[1-9][0-9]* mutants tested' mutants.log
 
       - name: Upload mutants report

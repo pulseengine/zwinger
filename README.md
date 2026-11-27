@@ -61,6 +61,18 @@ The session gets `ZWINGER_PROFILE` and `ZWINGER_ABI` in its environment. Below L
 
 Not covered, by Landlock's design: `chmod`, `chown`, `utime` and xattr changes outside the granted trees; signals to other processes below ABI 6; device ioctls below ABI 5.
 
+## Reporting to warte
+
+Every `zwinger run` writes one JSON event (schema `zwinger.event.v1`) for warte's probe to collect and ship (pulseengine/warte#223). The event holds:
+- the profile name and sha256;
+- `confined` or `refused`, and for a refusal its category (`profile`, `path`, `carve-out`, `noexec`, `network`, `kernel`, `backend`);
+- the Landlock ABI, network mode and not-enforced list;
+- grant counts.
+
+Paths, arguments and command lines are not written. zwinger opens the file before confining, so the session needs no grant for the events directory and cannot write there. A failure to write an event is reported on stderr and changes nothing else.
+
+The directory is `ZWINGER_EVENTS_DIR` if set (empty turns events off), else `$XDG_STATE_HOME/warte/zwinger`, else `~/.local/state/warte/zwinger`. A systemd unit that runs as a service user sets `ZWINGER_EVENTS_DIR` to the directory the probe reads.
+
 ## Proofs
 
 `cargo kani` checks the seccomp filter and the backend's decisions on the shipped code (`src/linux.rs`, `mod proofs`, CI job "Kani proofs"):

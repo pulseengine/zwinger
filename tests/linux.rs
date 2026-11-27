@@ -601,3 +601,68 @@ fn without_noexec_the_same_file_runs_confined() {
 fn noexec_inside_a_write_grant_is_refused_end_to_end() {
     refused("noexec: [\"@/w/sub\"]\n");
 }
+
+/// Every event file in `dir`, parsed.
+fn events_in(dir: &Path) -> Vec<serde_json::Value> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.map(|e| {
+        let text = std::fs::read_to_string(e.unwrap().path()).unwrap();
+        serde_json::from_str(&text).unwrap()
+    })
+    .collect()
+}
+
+// rivet: verifies REQ-ZW-014
+#[test]
+fn run_writes_one_confined_event_to_a_dir_the_session_cannot_reach() {
+    let sc = Scene::new("");
+    // Outside every grant: the event still arrives (opened before confining), the session
+    // itself cannot write there.
+    let dir = sc.path("o/events");
+    let env = [("ZWINGER_EVENTS_DIR", s(&dir))];
+    let o = sc.run_env(&bash(&format!("touch {}/x", s(&dir))), &env);
+    assert!(!o.status.success(), "the session wrote into the events dir");
+    let evs = events_in(&dir);
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    let e = &evs[0];
+    let abi = kernel_abi().min(zwinger::linux::MAX_KNOWN_ABI);
+    assert_eq!(e["schema"], "zwinger.event.v1");
+    assert_eq!(e["verdict"], "confined");
+    assert_eq!(e["profile"], "e2e");
+    assert_eq!(e["landlock_abi"], abi);
+    assert_eq!(e["network"], "none");
+    assert_eq!(e["write_grants"], 2);
+    assert_eq!(
+        e["profile_sha256"],
+        zwinger::events::sha256_file(&sc.profile).unwrap()
+    );
+    let text = e.to_string();
+    assert!(
+        !text.contains(s(&sc.root.0)),
+        "a path left the machine: {text}"
+    );
+}
+
+// rivet: verifies REQ-ZW-014
+#[test]
+fn a_refused_run_writes_its_category_and_no_reason_text() {
+    let sc = Scene::new("deny_read: [\"@/r/public\"]\n");
+    let dir = sc.path("o/events");
+    let o = Command::new(ZWINGER)
+        .arg("run")
+        .arg(&sc.profile)
+        .arg("--")
+        .arg("/bin/true")
+        .env("ZWINGER_EVENTS_DIR", &dir)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(78));
+    let evs = events_in(&dir);
+    assert_eq!(evs.len(), 1, "{evs:?}");
+    assert_eq!(evs[0]["verdict"], "refused");
+    assert_eq!(evs[0]["category"], "carve-out");
+    assert_eq!(evs[0]["landlock_abi"], serde_json::Value::Null);
+    assert!(!evs[0].to_string().contains(s(&sc.root.0)));
+}

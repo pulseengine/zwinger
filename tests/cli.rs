@@ -114,3 +114,36 @@ fn explain_names_the_rule_for_a_path_and_a_port() {
     assert_eq!(o.status.code(), Some(78));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// rivet: verifies REQ-ZW-014
+#[test]
+fn run_with_an_unloadable_profile_writes_a_profile_refusal_event() {
+    let dir = std::env::temp_dir().join(format!("zwinger-cli-events-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let o = Command::new(env!("CARGO_BIN_EXE_zwinger"))
+        .args(["run", "/nonexistent/zwinger.yaml", "--", "/bin/true"])
+        .env("ZWINGER_EVENTS_DIR", &dir)
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(78));
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+    assert_eq!(files.len(), 1);
+    let text = std::fs::read_to_string(files[0].as_ref().unwrap().path()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["verdict"], "refused");
+    assert_eq!(v["category"], "profile");
+    assert_eq!(v["profile"], serde_json::Value::Null);
+    assert_eq!(v["profile_sha256"], serde_json::Value::Null);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_empty_events_dir_turns_events_off() {
+    let o = Command::new(env!("CARGO_BIN_EXE_zwinger"))
+        .args(["run", "/nonexistent/zwinger.yaml", "--", "/bin/true"])
+        .env("ZWINGER_EVENTS_DIR", "")
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(78));
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("events:"));
+}

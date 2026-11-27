@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::ExitCode;
+use zwinger::events::{self, Event};
 use zwinger::{EXIT_REFUSED, profile::Profile};
 
 const USAGE: &str = "usage: zwinger check PROFILE\n       zwinger explain PROFILE PATH|tcp:PORT|udp:PORT\n       zwinger run PROFILE -- COMMAND [ARG...]";
@@ -24,9 +25,14 @@ fn main() -> ExitCode {
             Err(e) => refuse(&e.to_string()),
         },
         Some("run") if args.len() >= 4 && args[2] == "--" => {
-            match Profile::load(Path::new(&args[1])) {
-                Ok(p) => run(&p, &args[3], &args[4..]),
-                Err(e) => refuse(&e.to_string()),
+            let path = Path::new(&args[1]);
+            match Profile::load(path) {
+                Ok(p) => run(&p, path, &args[3], &args[4..]),
+                Err(e) => {
+                    let sha = events::sha256_file(path);
+                    events::end(events::begin(), &Event::refused(None, sha, "profile"));
+                    refuse(&e.to_string())
+                }
             }
         }
         Some("--version" | "-V") => {
@@ -46,12 +52,36 @@ fn main() -> ExitCode {
 }
 
 #[cfg(target_os = "linux")]
-fn run(p: &Profile, cmd: &str, args: &[String]) -> ExitCode {
+fn run(p: &Profile, path: &Path, cmd: &str, args: &[String]) -> ExitCode {
     use std::os::unix::process::CommandExt;
+    use zwinger::profile::NetworkMode;
+    // Open the event file and hash the profile before confining: afterwards neither path is
+    // reachable, while the open descriptor stays writable.
+    let pending = events::begin();
+    let sha = events::sha256_file(path);
     let (enf, plan) = match zwinger::linux::confine(p) {
         Ok(c) => c,
-        Err(e) => return refuse(&e),
+        Err(e) => {
+            let ev = Event::refused(Some(p.name.clone()), sha, events::category(&e));
+            events::end(pending, &ev);
+            return refuse(&e);
+        }
     };
+    let network = match enf.network {
+        NetworkMode::None => "none",
+        NetworkMode::Unfiltered => "unfiltered",
+    };
+    let ev = Event::confined(
+        p.name.clone(),
+        sha,
+        enf.abi,
+        network,
+        enf.not_enforced().into_iter().map(String::from).collect(),
+        plan.read.len(),
+        plan.write.len(),
+        plan.skipped.len(),
+    );
+    events::end(pending, &ev);
     eprintln!("{}", enf.summary(&p.name, &plan));
     // Only returns on failure; the session is already confined either way.
     let err = std::process::Command::new(cmd)
@@ -68,7 +98,7 @@ fn run(p: &Profile, cmd: &str, args: &[String]) -> ExitCode {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run(_: &Profile, _: &str, _: &[String]) -> ExitCode {
+fn run(_: &Profile, _: &Path, _: &str, _: &[String]) -> ExitCode {
     // Fail closed: never run a command unconfined because no backend exists yet.
     refuse("no enforcement backend on this platform yet; refusing to run unconfined")
 }
