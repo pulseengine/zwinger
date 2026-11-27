@@ -765,6 +765,8 @@ artifacts:
       - type: satisfies
         target: REQ-ZW-018
       - type: satisfies
+        target: REQ-ZW-023
+      - type: satisfies
         target: REQ-ZW-016
 
   - id: VER-ZW-007
@@ -955,3 +957,31 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-021
+  - id: REQ-ZW-023
+    type: requirement
+    title: "The binary's lifecycle conforms to the architecture model's transitions"
+    status: approved
+    description: >
+      Real zwinger runs (a malformed profile, a missing grant, a confined command that exits,
+      an exec that fails after confinement) are mapped from their event and exit status onto the
+      session's modes, and every step must be a transition in spar's export of the model
+      (architecture/expected/lifecycle.smv). A refused event with an exit other than 78, or a
+      confined event with exit 78, maps to a step the model forbids. CI fails when the committed
+      export differs from what spar derives from the model.
+    links:
+      - type: refines
+        target: REQ-ZW-018
+
+  - id: VER-ZW-011
+    type: verification
+    title: "Lifecycle conformance: real runs against the model's transition relation"
+    status: implemented
+    method: test
+    description: >
+      tests/lifecycle.rs, run by cargo test in the Linux and macOS jobs, with the parser and the
+      mapping tested on their own (the export parses to the five transitions; a session that
+      runs after refusing does not conform). The architecture job diffs the committed export
+      against spar modes --format smv.
+    links:
+      - type: verifies
+        target: REQ-ZW-023
