@@ -302,6 +302,19 @@ pub fn quote(field: &str, s: &str) -> Result<String, String> {
     Ok(format!("\"{s}\""))
 }
 
+/// Seatbelt rules for the per-session socket directory (`q` already quoted). bind() needs
+/// file-write-create, so creating and unlinking are allowed for sockets only: no regular file,
+/// directory or hard link can be made here. Seatbelt checks a rename's target as the same
+/// file-write-create, so a socket already in a write tree can be renamed in (measured in
+/// tests/macos_sockdir.rs; documented in docs/profile.md). The directory lies outside every
+/// write grant, so no broader rule allows anything else here.
+pub fn session_socket_rules(q: &str) -> String {
+    format!(
+        "(allow file-read* network-bind network-outbound (subpath {q})) ; per-session socket directory\n\
+         (allow file-write-create file-write-unlink (require-all (subpath {q}) (vnode-type SOCKET))) ; its sockets\n"
+    )
+}
+
 fn quote_path(field: &str, p: &Path) -> Result<String, String> {
     let s = p
         .to_str()
@@ -366,13 +379,7 @@ pub fn policy_with_session(
             }
             if let Some(dir) = session_sockets {
                 let q = quote_path("socket directory", dir)?;
-                // No file-write rights at all: nothing can be renamed, hard-linked or moved onto
-                // an existing socket here from a write tree, so the only sockets here are ones
-                // bound here. The directory lies outside every write grant, so no broader rule
-                // allows it either.
-                s += &format!(
-                    "(allow file-read* network-bind network-outbound (subpath {q})) ; per-session socket directory\n"
-                );
+                s += &session_socket_rules(&q);
             }
             for d in &plan.socket_dirs {
                 let q = quote_path(d.field, &d.resolved)?;

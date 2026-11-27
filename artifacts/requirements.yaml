@@ -1246,9 +1246,12 @@ artifacts:
       macOS: write trees allow network-bind only; network-outbound is allowed in the per-session
       directory and in unix_socket_dirs. src/sockets.rs creates the per-session directory (0700,
       short name for macOS's 104-byte socket paths) before confinement, outside every write grant,
-      and it gets no right to receive renamed or linked files (no Landlock Refer; no Seatbelt
-      file-write rights), so a foreign socket cannot be moved in from a write tree
-      and connected there.
+      and on Linux it gets no right to receive renamed or linked files (no Landlock Refer), so a
+      foreign socket cannot be moved in from a write tree and connected there. On macOS bind()
+      needs file-write-create, so the directory allows creating and unlinking sockets only (no
+      regular file, directory or hard link); Seatbelt checks a rename's target as the same right,
+      so there a socket already in a write tree can be renamed in. tests/macos_sockdir.rs measures
+      both and asserts the residual, and docs/profile.md states it.
     rationale: >
       A socket in a write tree can belong to a server outside the session, which then acts for
       it with its own authority. Attaching the connect right to directories closes this whatever

@@ -1,9 +1,7 @@
-//! Which Seatbelt rights the per-session socket directory needs on macOS (#40).
-//!
-//! The session must bind and connect there. Nothing from a write tree may be renamed or
-//! hard-linked in, or a socket of a server outside the session, sitting in a write tree, could be
-//! moved into the one place connect is allowed. Each candidate rule set is checked for both, with
-//! a control that the same rename and link succeed unconfined.
+//! The Seatbelt rules for the per-session socket directory (#40), measured. The session must
+//! bind and connect there; nothing from a write tree should get in. bind() needs
+//! file-write-create, and Seatbelt checks a rename's target as the same right, so a socket already
+//! in a write tree can be renamed in: that residual is asserted, so a change is noticed.
 #![cfg(target_os = "macos")]
 
 use std::os::unix::net::UnixListener;
@@ -74,7 +72,7 @@ fn outcomes(extra: &str) -> Vec<(&'static str, bool)> {
         "nc -lU {d}/s & p=$!; for i in 1 2 3 4 5 6 7 8 9 10; do test -S {d}/s && break; sleep 0.1; done; \
          test -S {d}/s; r=$?; kill $p 2>/dev/null; exit $r"
     );
-    let unlink = format!("rm -f {d}/s");
+    let unlink = format!("rm -f {d}/s && ! test -e {d}/s");
     vec![
         ("bind in the socket directory", run(Some(&p), &bind)),
         ("unlink own socket", run(Some(&p), &unlink)),
@@ -94,18 +92,6 @@ fn outcomes(extra: &str) -> Vec<(&'static str, bool)> {
     ]
 }
 
-fn check(extra: &str, want: &[(&str, bool)]) {
-    let got = outcomes(extra);
-    let bad: Vec<_> = want
-        .iter()
-        .filter(|(k, v)| got.iter().any(|(g, o)| g == k && o != v))
-        .collect();
-    assert!(
-        bad.is_empty(),
-        "rules {extra:?}\n got {got:#?}\n wrong {bad:?}"
-    );
-}
-
 #[test]
 fn controls_rename_and_link_succeed_unconfined() {
     let t = dirs();
@@ -115,34 +101,32 @@ fn controls_rename_and_link_succeed_unconfined() {
     assert!(run(None, &format!("mv {w}/srv {d}/m && ln {w}/f {d}/l")));
 }
 
-const WANT: &[(&str, bool)] = &[
-    ("bind in the socket directory", true),
-    ("rename a write-tree socket in", false),
-    ("hard-link a write-tree file in", false),
-];
-
 #[test]
-fn no_write_rights() {
-    check("", WANT);
-}
-
-#[test]
-fn create_only() {
-    check("(allow file-write-create (subpath \"@D\"))\n", WANT);
-}
-
-#[test]
-fn create_sockets_only() {
-    check(
-        "(allow file-write-create (require-all (subpath \"@D\") (vnode-type SOCKET)))\n",
-        WANT,
+fn bind_needs_a_write_right() {
+    // No write rights in the directory: bind() is refused, so some create right is needed.
+    let got = outcomes("");
+    assert!(
+        got.contains(&("bind in the socket directory", false)),
+        "{got:#?}"
     );
 }
 
+// rivet: verifies REQ-ZW-027
 #[test]
-fn create_and_unlink_sockets_only() {
-    check(
-        "(allow file-write-create file-write-unlink (require-all (subpath \"@D\") (vnode-type SOCKET)))\n",
-        WANT,
-    );
+fn the_session_socket_rules() {
+    // The rules zwinger emits (src/macos.rs session_socket_rules).
+    let got = outcomes(&zwinger::macos::session_socket_rules("\"@D\""));
+    let want = [
+        ("bind in the socket directory", true),
+        ("unlink own socket", true),
+        ("hard-link a write-tree file in", false),
+        ("create a regular file", false),
+        ("mkdir", false),
+        // The residual, asserted so a change in Seatbelt is noticed: a rename's target is
+        // checked as file-write-create, which sockets need for bind (docs/profile.md).
+        ("rename a write-tree socket in", true),
+    ];
+    for w in want {
+        assert!(got.contains(&w), "want {w:?}\n got {got:#?}");
+    }
 }
