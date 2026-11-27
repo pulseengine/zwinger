@@ -335,7 +335,7 @@ jobs:
   kani:
     # Machine-checked proofs (src/linux.rs, mod proofs): the seccomp program equals its spec for
     # every syscall input on x86_64 and aarch64 in all four socket modes; the program is well
-    # formed; enforcement() never opens a channel the profile did not state; four planted bugs
+    # formed; enforcement() never opens a channel the profile did not state; twelve planted bugs
     # must each be rejected (should_panic), or the job fails. Hosted runner: the action installs
     # Kani and CBMC.
     name: Kani proofs
