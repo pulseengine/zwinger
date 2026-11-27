@@ -2,7 +2,7 @@
 
 `cargo kani` checks the seccomp filter and the backend's decisions on the shipped code (`src/linux.rs`, `mod proofs`, CI job "Kani proofs"):
 
-- for x86_64 and aarch64 in every socket mode, the filter's verdict equals its specification for every syscall number and argument, and the program is well formed;
+- for x86_64, aarch64 and riscv64 in every socket mode, the filter's verdict equals its specification for every syscall number and argument, and the program is well formed;
 - from any kernel ABI and network mode, `socket(2)` is allowed exactly as REQ-ZW-005, REQ-ZW-006 and REQ-ZW-009 state;
 - for every ABI, the backend never opens a channel the profile did not state and never asks Landlock for a right the kernel lacks.
 - if the carve-out rules accept a profile, every path beneath a `deny_read` or `deny_write` stays uncovered by the grants Landlock receives, except a read exception stated inside that `deny_read` (stated and resolved paths vary independently, so symlink aliasing is included).
