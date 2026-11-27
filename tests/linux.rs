@@ -542,3 +542,58 @@ fn check_reports_what_run_would_enforce_without_running_anything() {
     );
     assert!(lines[1].contains("network: none"), "{out}");
 }
+
+/// A copy of /bin/true in the scene's write tree, executable.
+fn copy_true(sc: &Scene) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let t = sc.path("w/t");
+    std::fs::copy(Path::new("/bin/true").canonicalize().unwrap(), &t).unwrap();
+    std::fs::set_permissions(&t, std::fs::Permissions::from_mode(0o755)).unwrap();
+    t
+}
+
+// rivet: verifies REQ-ZW-013
+#[test]
+fn noexec_refuses_execve_in_a_write_tree_but_not_reading_or_writing_it() {
+    let sc = Scene::new("noexec: [\"@/w\"]\n");
+    let t = copy_true(&sc);
+    assert!(
+        unconfined(&[s(&t)]).status.success(),
+        "control: it runs unconfined"
+    );
+    let o = sc.run(&[s(&t)]);
+    assert!(!o.status.success(), "execve under noexec succeeded");
+    // The exec itself fails, with EACCES, so zwinger reports it as not executable (126).
+    assert_eq!(
+        o.status.code(),
+        Some(126),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let o = sc.run(&bash(&format!(
+        "cat {} > /dev/null && echo x > {}",
+        s(&t),
+        s(&sc.path("w/f"))
+    )));
+    assert!(
+        o.status.success(),
+        "read and write still work: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // Programs from read trees still run (bash itself, from /usr).
+    assert!(sc.run(&bash("true")).status.success());
+}
+
+// rivet: verifies REQ-ZW-013
+#[test]
+fn without_noexec_the_same_file_runs_confined() {
+    let sc = Scene::new("");
+    let t = copy_true(&sc);
+    assert!(sc.run(&[s(&t)]).status.success());
+}
+
+// rivet: verifies REQ-ZW-013
+#[test]
+fn noexec_inside_a_write_grant_is_refused_end_to_end() {
+    refused("noexec: [\"@/w/sub\"]\n");
+}

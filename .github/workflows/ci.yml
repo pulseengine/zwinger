@@ -216,7 +216,7 @@ jobs:
           [[ "$v" == "Kani Rust Verifier $KANI_VERSION "* ]]
 
       # Every harness, then the summary: zero failures, and at least as many harnesses as exist
-      # today (24), so a deleted or cfg-ed out harness is a red job, not a quieter green one.
+      # today (26), so a deleted or cfg-ed out harness is a red job, not a quieter green one.
       - name: Kani (every harness)
         run: |
           set -o pipefail
@@ -227,4 +227,4 @@ jobs:
           summary="$(grep -E "^Complete - [0-9]+ successfully verified harnesses, 0 failures, [0-9]+ total\.$" kani.log)"
           echo "$summary"
           total="$(echo "$summary" | sed -E 's/.* ([0-9]+) total\./\1/')"
-          test "$total" -ge 24
+          test "$total" -ge 26

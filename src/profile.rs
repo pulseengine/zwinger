@@ -39,6 +39,12 @@ pub struct Profile {
     /// Paths the session may not write even inside a `write` tree (its own launcher settings).
     #[serde(default)]
     pub deny_write: Vec<PathBuf>,
+    /// Trees nothing may be executed from, even where `read` or `write` grants them (a scratch
+    /// or download directory the session writes to). Every grant at or beneath one loses the
+    /// right to execute. On Linux a `noexec` tree inside a wider grant is refused, because that
+    /// grant's execute right would still cover it.
+    #[serde(default)]
+    pub noexec: Vec<PathBuf>,
     /// Outbound network.
     #[serde(default)]
     pub network: Network,
@@ -145,6 +151,7 @@ impl Profile {
             &mut p.write_if_present,
             &mut p.deny_read,
             &mut p.deny_write,
+            &mut p.noexec,
         ] {
             for path in list.iter_mut() {
                 *path = normalize(path);
@@ -156,7 +163,7 @@ impl Profile {
     }
 
     /// The path lists by field name, in a fixed order.
-    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 6] {
+    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 7] {
         [
             ("read", &self.read),
             ("write", &self.write),
@@ -164,6 +171,7 @@ impl Profile {
             ("write_if_present", &self.write_if_present),
             ("deny_read", &self.deny_read),
             ("deny_write", &self.deny_write),
+            ("noexec", &self.noexec),
         ]
     }
 
@@ -395,6 +403,7 @@ network:
             "write_if_present",
             "deny_read",
             "deny_write",
+            "noexec",
         ] {
             assert!(
                 invalid(&format!("name: \"x\"\n{field}: [\"repo\"]\n")),
@@ -412,6 +421,7 @@ network:
             "write_if_present",
             "deny_read",
             "deny_write",
+            "noexec",
         ] {
             assert!(
                 invalid(&format!("name: \"x\"\n{field}: [\"/repo/../etc\"]\n")),

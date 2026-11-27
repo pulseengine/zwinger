@@ -47,6 +47,41 @@ pub struct Plan {
     pub read: Vec<Grant>,
     pub write: Vec<Grant>,
     pub skipped: Vec<PathBuf>,
+    /// The resolved `noexec` trees: no grant at or beneath one keeps the right to execute.
+    pub noexec: Vec<PathBuf>,
+}
+
+/// Whether a grant keeps Landlock's execute right: not when it lies at or beneath a `noexec`
+/// tree.
+pub fn may_exec(grant: &Path, noexec: &[&Path]) -> bool {
+    !noexec.iter().any(|n| within(grant, n))
+}
+
+/// A `noexec` tree that lies strictly inside a grant, by index into each list. That grant's
+/// execute right covers the tree, and Landlock, which adds rights along a path, cannot take it
+/// away beneath the grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoexecViolation {
+    pub noexec: usize,
+    pub grant: usize,
+}
+
+/// The `noexec` rule on resolved paths, allocation-free so the Kani proof covers it. A profile
+/// is enforceable as written exactly when no grant strictly contains a `noexec` tree: then every
+/// grant covering a path beneath the tree lies at or beneath it, and `may_exec` drops its
+/// execute right.
+pub fn first_noexec_violation(grants: &[&Path], noexec: &[&Path]) -> Option<NoexecViolation> {
+    for (ni, n) in noexec.iter().enumerate() {
+        for (gi, g) in grants.iter().enumerate() {
+            if within(n, g) && !within(g, n) {
+                return Some(NoexecViolation {
+                    noexec: ni,
+                    grant: gi,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// What the backend enforces for one profile on one kernel.
@@ -119,6 +154,14 @@ impl Enforcement {
                 .map(|p| p.display().to_string())
                 .collect();
             s += &format!(" (absent, skipped: {})", names.join(", "));
+        }
+        if !plan.noexec.is_empty() {
+            let names: Vec<String> = plan
+                .noexec
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            s += &format!(" (no execution under: {})", names.join(", "));
         }
         s += &format!("; network: {network}; unix sockets: {unix}");
         s += &format!(
@@ -463,10 +506,25 @@ pub fn plan(p: &Profile) -> Result<Plan, String> {
     };
     check_carve_outs(&read, &write, &denied(&p.deny_read), &denied(&p.deny_write))
         .map_err(|e| e.to_string())?;
+    let noexec: Vec<PathBuf> = p.noexec.iter().map(|n| resolve(n)).collect();
+    let all: Vec<&Grant> = read.iter().chain(write.iter()).collect();
+    let paths: Vec<&Path> = all.iter().map(|g| g.resolved.as_path()).collect();
+    let trees: Vec<&Path> = noexec.iter().map(PathBuf::as_path).collect();
+    if let Some(v) = first_noexec_violation(&paths, &trees) {
+        let g = all[v.grant];
+        return Err(format!(
+            "noexec: {} lies inside {} {}, which allows execution; Landlock cannot take that \
+             right away beneath a grant; refusing",
+            p.noexec[v.noexec].display(),
+            g.field,
+            g.stated.display()
+        ));
+    }
     Ok(Plan {
         read,
         write,
         skipped,
+        noexec,
     })
 }
 
@@ -515,6 +573,17 @@ pub fn explain(p: &Profile, plan: &Plan, what: &str) -> Vec<String> {
             );
         }
     }
+    let covering = best(&plan.write).or_else(|| best(&plan.read));
+    out.push(
+        match (covering, plan.noexec.iter().find(|n| within(&path, n))) {
+            (None, _) => "execute: denied (no read or write grant covers it)".into(),
+            (Some(_), Some(n)) => format!(
+                "execute: denied (noexec {}: execve fails with EACCES)",
+                n.display()
+            ),
+            (Some(rule), None) => format!("execute: allowed ({rule})"),
+        },
+    );
     out
 }
 
@@ -847,17 +916,21 @@ pub fn confine(profile: &Profile) -> Result<(Enforcement, Plan), String> {
         // Log denials after the exec too: the session is a new program.
         created = created.log_new_exec(true).map_err(err)?;
     }
+    let noexec: Vec<&Path> = plan.noexec.iter().map(PathBuf::as_path).collect();
     for (paths, access) in [
         (&plan.read, AccessFs::from_read(abi)),
         (&plan.write, fs_all),
     ] {
         for path in paths.iter().map(|g| &g.resolved) {
             let fd = PathFd::new(path).map_err(|e| format!("{}: {e}; refusing", path.display()))?;
-            let access = if path.is_dir() {
+            let mut access = if path.is_dir() {
                 access
             } else {
                 access & AccessFs::from_file(abi)
             };
+            if !may_exec(path, &noexec) {
+                access.remove(AccessFs::Execute);
+            }
             created = created
                 .add_rule(PathBeneath::new(fd, access))
                 .map_err(err)?;
@@ -1036,6 +1109,7 @@ mod tests {
             read: vec![],
             write: vec![],
             skipped: vec![PathBuf::from("/opt/x")],
+            noexec: vec![],
         };
         let e = enforcement(4, &net(NetworkMode::Unfiltered, UnixSockets::Confined)).unwrap();
         assert_eq!(
@@ -1049,6 +1123,7 @@ mod tests {
             read: vec![],
             write: vec![],
             skipped: vec![],
+            noexec: vec![],
         };
         let e = enforcement(10, &Network::default()).unwrap();
         assert_eq!(
@@ -1319,7 +1394,8 @@ mod tests {
             o[1].starts_with("read: denied") && o[2].starts_with("write: denied"),
             "{o:?}"
         );
-        assert_eq!(o.len(), 3);
+        assert_eq!(o.len(), 4);
+        assert_eq!(o[3], "execute: denied (no read or write grant covers it)");
     }
 
     #[test]
@@ -1397,6 +1473,75 @@ mod tests {
             "_work, _tmp, _diag and the one cache present"
         );
         assert_eq!(pl.skipped.len(), own.write_if_present.len() - 1);
+    }
+
+    // rivet: verifies REQ-ZW-013
+    #[test]
+    fn noexec_drops_execute_at_and_beneath_the_tree_only() {
+        let t = tree();
+        let pr = profile(
+            &t,
+            "read: [\"@/usr\"]\nwrite: [\"@/home\", \"@/home/repo\"]\nnoexec: [\"@/home\"]\n",
+        );
+        let pl = plan(&pr).unwrap();
+        let trees: Vec<&Path> = pl.noexec.iter().map(PathBuf::as_path).collect();
+        assert!(may_exec(&pl.read[0].resolved, &trees), "/usr keeps execute");
+        assert!(!may_exec(&pl.write[0].resolved, &trees), "the tree itself");
+        assert!(
+            !may_exec(&pl.write[1].resolved, &trees),
+            "a grant beneath it"
+        );
+        let e = explain(&pr, &pl, &format!("{}/home/repo/x", t.0.display()));
+        assert!(e[3].starts_with("execute: denied (noexec "), "{e:?}");
+        let e = explain(&pr, &pl, &format!("{}/usr/bin/x", t.0.display()));
+        assert!(e[3].starts_with("execute: allowed (read "), "{e:?}");
+        let e = explain(&pr, &pl, &format!("{}/elsewhere", t.0.display()));
+        assert_eq!(
+            e.last().unwrap(),
+            "execute: denied (no read or write grant covers it)"
+        );
+    }
+
+    // rivet: verifies REQ-ZW-013
+    #[test]
+    fn noexec_inside_a_wider_grant_is_refused_and_names_both() {
+        let t = tree();
+        let e = plan(&profile(
+            &t,
+            "read: [\"@/usr\"]\nwrite: [\"@/home\"]\nnoexec: [\"@/home/repo\"]\n",
+        ))
+        .unwrap_err();
+        let root = t.0.display();
+        assert_eq!(
+            e,
+            format!(
+                "noexec: {root}/home/repo lies inside write {root}/home, which allows \
+                 execution; Landlock cannot take that right away beneath a grant; refusing"
+            )
+        );
+        // Under a read grant too, and the index names the right grant when there are several.
+        let e = plan(&profile(
+            &t,
+            "read: [\"@/home/.ssh\", \"@/usr\"]\nnoexec: [\"@/usr/bin\"]\n",
+        ))
+        .unwrap_err();
+        assert!(e.contains(&format!("lies inside read {root}/usr,")), "{e}");
+        // A noexec tree no grant reaches changes nothing and is accepted.
+        assert!(plan(&profile(&t, "read: [\"@/usr\"]\nnoexec: [\"@/home\"]\n")).is_ok());
+    }
+
+    #[test]
+    fn first_noexec_violation_reports_indices() {
+        let g = [Path::new("/a"), Path::new("/b")];
+        assert_eq!(first_noexec_violation(&g, &[Path::new("/a")]), None);
+        assert_eq!(
+            first_noexec_violation(&g, &[Path::new("/c"), Path::new("/b/x")]),
+            Some(NoexecViolation {
+                noexec: 1,
+                grant: 1
+            })
+        );
+        assert_eq!(first_noexec_violation(&g, &[Path::new("/")]), None);
     }
 
     // rivet: verifies REQ-ZW-005
@@ -1989,6 +2134,51 @@ mod proofs {
                 kani::cover!(e.unix_sockets && network.unix_sockets == UnixSockets::Confined);
                 kani::cover!(!e.unix_sockets);
             }
+        }
+    }
+
+    /// REQ-ZW-013: if the noexec rule accepts the profile, then for every path x beneath a
+    /// noexec tree, every grant that covers x has lost the execute right. Landlock allows execve
+    /// only through a rule on an ancestor of x that carries it, so execve beneath the tree fails.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn accepted_profiles_execute_nothing_under_noexec() {
+        let (a, b, n, x) = (
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+            any_normal_path(),
+        );
+        let grants = [as_path(&a), as_path(&b)];
+        let noexec = [as_path(&n)];
+        let x = as_path(&x);
+        let accepted = first_noexec_violation(&grants, &noexec).is_none();
+        if accepted && within(x, noexec[0]) {
+            for g in grants {
+                if within(x, g) {
+                    assert!(!may_exec(g, &noexec), "a grant keeps execute under noexec");
+                }
+            }
+        }
+        kani::cover!(
+            accepted && within(x, noexec[0]) && within(x, grants[0]),
+            "a granted path under an accepted noexec tree"
+        );
+        kani::cover!(!accepted, "refused");
+    }
+
+    /// Vacuity control: accepting every profile (the inside-grant rule dropped) must be caught,
+    /// because a wider grant then keeps execute beneath the noexec tree.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::should_panic]
+    fn planted_noexec_inside_grant_unchecked() {
+        let (a, n, x) = (any_normal_path(), any_normal_path(), any_normal_path());
+        let grants = [as_path(&a)];
+        let noexec = [as_path(&n)];
+        let x = as_path(&x);
+        if within(x, noexec[0]) && within(x, grants[0]) {
+            assert!(!may_exec(grants[0], &noexec));
         }
     }
 }
