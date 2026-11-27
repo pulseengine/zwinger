@@ -13,11 +13,13 @@ The baseline, `confinement/probe/job.sh`, fails unless `ZWINGER_PROFILE` and `ZW
 |---|---|---|
 | `confined-write-decoy` | create `/var/lib/zwinger-probe/write-target` | the decoy directory is outside every write grant (EACCES) |
 | `confined-read-decoy` | read `/var/lib/zwinger-probe/secret` | the file is outside every grant (EACCES) |
-| `confined-replace-runner-file` | append to the runner's `run.sh` | the runner home is read-only under the profile (EACCES; also read-only under systemd) |
+| `confined-replace-runner-file` | append to the runner's `run.sh` | the runner home is read-only under the profile (EACCES), and also under systemd's ProtectHome (EROFS) where the unit sets it |
 
 The decoy directory is created by the runner deploy (smithy), owned by the runner user, mode 0755, with `secret` at mode 0644, so that file permissions alone would allow both attacks. jig's baseline probe (`jig confined`) uses the same two paths.
 
-A run counts when it is on the default branch, on the deployed runner with the label pinned, exits 0, and every control passes, and when the stand-in has shown every control FAIL-OPEN at least once since the profile last changed. The workflow runs on every push to main, nightly, and by hand. The confined job never runs on pull requests, and stays off until the repository variable `CONFINED_RUNNER_ONLINE` is `true`, set when a confined runner is registered.
+The two decoy controls isolate zwinger: file modes alone would allow both attacks. `confined-replace-runner-file` proves the layered result. Its regex also accepts `Read-only file system`, because a read-only mount refuses the open before Landlock's hook runs, so on a host whose unit sets ProtectHome it passes without exercising zwinger's rule. Its real target is the live `run.sh`: if confinement ever failed, the control would append one newline to it. That is harmless and on purpose, and the nightly run is what would catch it.
+
+A run counts when it is on the default branch, on the deployed runner with the label pinned, exits 0, and every control passes, and when the stand-in has shown every control FAIL-OPEN at least once since the profile last changed. The stand-in (`.github/workflows/confinement.yml`) runs on every pull request, on push to main, and by hand. The confined job (`.github/workflows/confinement-runner.yml`) runs on push to main, nightly and by hand. It has no pull_request trigger, so no pull request can reach the runner, and it stays off until the repository variable `CONFINED_RUNNER_ONLINE` is `true`, set when a confined runner is registered.
 
 Not claimed:
 - **egress:** the runner profile leaves the network unfiltered until host filtering (#14) lands; then egress becomes a control;
