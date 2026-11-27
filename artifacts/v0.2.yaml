@@ -162,14 +162,17 @@ artifacts:
   - id: REQ-ZW-040
     type: requirement
     title: "Mac agent sessions run under zwinger"
-    status: draft
+    status: approved
     release: v0.2.0
     description: >
-      An agent session on macOS runs under zwinger. The shape (the whole agent process under
-      zwinger, or zwinger per command, and how it coexists with an agent's own sandbox, since a
-      second Seatbelt sandbox_init fails) is decided on its design issue before building,
-      covering network to the model API, loopback ports for local services, keychain access and
-      the agent's own configuration writes.
+      An agent session on macOS runs under zwinger. The whole agent process runs under zwinger (option C,
+      owner, 2026-11-27, #65): its file edits, commands and configuration writes are confined,
+      and its egress is allowed only to the loopback port of the agent's own network proxy, which
+      runs outside the session and filters domains. A profile that allows that port also refuses
+      every other outbound connection. An agent whose proxy cannot run outside the session is not
+      supported by this shape. The agent's own command sandbox is off inside zwinger, since a
+      second Seatbelt sandbox_init fails; the preset and docs say so, and ZWINGER_PROFILE tells
+      the agent it is already confined. The first pilot is a low-risk peer session.
 
   - id: REQ-ZW-041
     type: requirement
@@ -200,3 +203,25 @@ artifacts:
       preset, after the runner19 canary passes the confined-runner controls. The deployment
       belongs to smithy; zwinger's part is the preset, check --format json and diff. Held at
       implemented until smithy reports the fleet confined.
+
+  - id: DD-ZW-027
+    type: design-decision
+    title: "A Mac agent session runs whole under zwinger, egress only through its proxy's loopback port"
+    status: approved
+    release: v0.2.0
+    description: >
+      Owner decision, 2026-11-27 (#65, option C over A, A then C, and B).
+    decision: >
+      zwinger run PROFILE -- AGENT confines the whole agent process. The profile's network is a
+      new macOS mode that allows outbound only to listed loopback ports (Seatbelt matches
+      localhost:PORT); the agent's network proxy listens on one of them, outside the session,
+      and filters domains. All other outbound is refused. The agent's own command sandbox is
+      turned off inside the session.
+    rationale: >
+      One boundary covers everything the agent does, including edits made by the agent process
+      itself, which per-command wrapping (B) leaves outside. Routing egress through the agent's
+      proxy gives domain filtering on macOS before #14 lands, without zwinger parsing host names.
+      The cost is that an agent whose proxy cannot run outside the session is not supported.
+    links:
+      - type: satisfies
+        target: REQ-ZW-040
