@@ -75,7 +75,7 @@ jobs:
           test "$VERSION" = "v$CARGO"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-  # Static musl binaries: zwinger enforces on Linux only (the macOS backend does not exist yet),
+  # Static musl binaries: releases ship the Linux backend only (macOS is a Seatbelt prototype),
   # and a launcher with no dynamic loader runs on any glibc or musl host, CI runners and the
   # Raspberry Pi alike. Both are built natively, so each smoke test executes its own tarball.
   build:
