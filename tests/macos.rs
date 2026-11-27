@@ -563,3 +563,46 @@ fn a_denial_inside_a_read_exception_stays_denied() {
     );
     assert_eq!(probe(&sc, "read", s(&secret)), Some(EPERM));
 }
+
+// rivet: verifies REQ-ZW-015
+#[test]
+fn hard_links_cannot_give_an_unreadable_file_a_readable_path() {
+    // A hard link needs no read access to its source, and the new name lies in a write tree.
+    // If Seatbelt did not check the link's source, any unreadable file on the same volume
+    // (outside every grant, or under a deny_read inside a read grant) could be linked into a
+    // write tree and read there. Linux blocks this with Landlock's REFER right.
+    let sc = Scene::new("deny_read: [\"@/r/private\"]\n");
+    for (secret, name) in [
+        (sc.path("o/secret"), "w/l1"),
+        (sc.path("r/private/key"), "w/l2"),
+    ] {
+        let link = sc.path(name);
+        let o = sc.run(&bash(&format!(
+            "ln {} {} 2>/dev/null; cat {} 2>/dev/null",
+            s(&secret),
+            s(&link),
+            s(&link)
+        )));
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(
+            !out.contains("secret-data") && !out.contains("private-key"),
+            "read {} through a hard link: {out}",
+            secret.display()
+        );
+        assert!(
+            !link.exists(),
+            "the hard link to {} was created",
+            secret.display()
+        );
+        // Control: unconfined, the same link works.
+        let ok = sc.path(&format!("{name}-control"));
+        assert!(
+            Command::new("/bin/ln")
+                .args([s(&secret), s(&ok)])
+                .status()
+                .unwrap()
+                .success(),
+            "control: ln works unconfined"
+        );
+    }
+}
