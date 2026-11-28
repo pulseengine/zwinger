@@ -1,9 +1,10 @@
 # zwinger profile for one self-hosted GitHub Actions runner on Linux (Landlock ABI >= 3).
 #
-# Template: replace every {{home}} with the runner's home, e.g. /var/lib/runners/runner19. An
-# unsubstituted file fails `zwinger check` ("{{home}}/_work is not absolute"), so a missed
-# substitution cannot run. The entries stay quoted: an unquoted {{home}} would be a YAML flow
-# mapping, and quoting keeps the substituted paths plain strings.
+# Preset github-runner. Render it with the runner's home:
+#   zwinger init --preset github-runner --var home=/var/lib/runners/runner19 \
+#     --output /etc/zwinger/runner19.yaml
+# The unrendered preset fails `zwinger check` (its paths are not absolute), so a missed variable
+# cannot run.
 #
 # systemd drop-in. run.sh copies run-helper.sh into the home on every start, and the home is
 # read-only under this profile, so the copy runs before zwinger, unconfined, and zwinger runs

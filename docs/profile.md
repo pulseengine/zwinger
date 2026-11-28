@@ -3,6 +3,10 @@
 ## Commands
 
 ```sh
+zwinger init --list                  # the built-in presets and their variables
+zwinger init --preset agent-macos --var repo=~/git/demo --var state=~/.agent \
+  --var proxy_port=3128 --output ~/.config/zwinger/agent.yaml   # writes once, never overwrites
+```sh
 zwinger check profile.yaml           # everything run checks, without running; 78 with the reason
 zwinger explain profile.yaml PATH    # which grant allows PATH (or tcp:PORT), and why not
 zwinger run profile.yaml -- AGENT    # Linux, macOS: confined exec; elsewhere: refused (exit 78)
@@ -42,6 +46,14 @@ On Linux a profile with `allow_loopback_ports` is refused (exit 78): Landlock fi
 ## Listing without reading
 
 `list` names directories the session may list, with no file in them becoming readable. It is for programs that check, before they start, that they can list their root and every directory above it, as the GitHub Actions runner does. On Linux, Landlock's listing right covers a directory and every directory beneath it, and on macOS the rule matches the same tree. So `list: [/]` lets the session list directory names anywhere its Unix permissions allow. Each entry must be a directory, and an entry that overlaps a `deny_read` tree, containing it or lying inside it, is refused, because a listing would show the names `deny_read` hides.
+
+## Presets
+
+`zwinger init` writes a profile from a preset compiled into zwinger: `agent-macos`, `agent-linux` and `github-runner`. It fills each `{{name}}` from `--var name=value`. A missing, unknown or repeated variable is refused, and so is a value with a character outside letters, digits, space and `. _ - / ~ + @ :`, so a value cannot add a grant. The result must parse as a profile before anything is written, and `--output` never overwrites a file. Each preset's header says what it confines and what it does not.
+
+## Per-session temporary directory
+
+`session_tmp: true` makes `run` create a fresh private directory outside every write grant, in the same place as the socket directory, grant it, and set `TMPDIR` to it. Files the session puts in temp are then not in `/tmp` or the user's `$TMPDIR`, where unconfined processes of the same user would read them. The agent presets set it.
 
 ## What the session receives
 

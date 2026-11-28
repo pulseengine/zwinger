@@ -1,0 +1,65 @@
+# zwinger preset agent-macos: one AI agent session on macOS working in one repository.
+#
+# The whole agent process runs under zwinger (zwinger#65): its file edits, the commands it runs
+# and its own configuration writes are all confined. Its only network is the loopback port of a
+# domain-filtering proxy that runs outside the session; point the agent at it with
+# HTTPS_PROXY=http://127.0.0.1:{{proxy_port}} HTTP_PROXY=… NO_PROXY=127.0.0.1,localhost. Bind
+# that proxy to 127.0.0.1: Seatbelt matches every address of this host, not only loopback.
+# Turn the agent's own command sandbox off: a second Seatbelt sandbox cannot start inside
+# zwinger, and ZWINGER_PROFILE tells the agent it is already confined.
+#
+# Variables: repo (the repository, writable), state (the agent's own configuration and state
+# directory, writable), proxy_port. Add local service ports to allow_loopback_ports, and the
+# toolchains your agent runs to read_if_present. Keep this file outside every write grant,
+# for example in ~/.config/zwinger/.
+#
+# `zwinger why PATH` inside the session, and `zwinger explain` outside it, name the rule that
+# decides a path.
+
+name: agent-macos
+
+read:
+  - "/usr"
+  - "/bin"
+  - "/sbin"
+  - "/System"
+  - "/Library"
+  - "/private/etc"
+
+read_if_present:
+  - "/opt/homebrew"
+  - "/Applications"
+  - "~/.gitconfig"
+  - "~/.config/git"
+  - "~/.cargo"
+  - "~/.rustup"
+
+# A fresh private TMPDIR per session, outside every other grant (REQ-ZW-045): shared temp
+# directories are read by unconfined processes of the same user.
+session_tmp: true
+
+write:
+  - "{{repo}}"
+  - "{{state}}"
+  - "/dev/null"
+
+deny_read:
+  - "~/.ssh"
+  - "~/.aws"
+  - "~/.gnupg"
+  - "~/Library/Keychains"
+  # Credential files inside the trees granted above.
+  - "~/.cargo/credentials"
+  - "~/.cargo/credentials.toml"
+  - "~/.git-credentials"
+  - "~/.config/git/credentials"
+
+# Certificate trust for TLS. An agent that keeps its credential in the login keychain also needs
+# "com.apple.SecurityServer"; adding it lets the session ask securityd for any keychain item the
+# user's keychain hands out without a prompt, whatever deny_read says about ~/Library/Keychains.
+mach_lookup:
+  - "com.apple.trustd.agent"
+
+network:
+  mode: none
+  allow_loopback_ports: [{{proxy_port}}]

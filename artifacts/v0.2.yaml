@@ -289,3 +289,43 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-044
+
+  - id: REQ-ZW-045
+    type: requirement
+    title: "A session can get a fresh private TMPDIR outside every other grant"
+    status: implemented
+    release: v0.2.0
+    description: >
+      With session_tmp: true, run creates a fresh 0700 directory outside every write grant,
+      grants it, and sets TMPDIR to it, so files the session puts in temp are not in shared
+      locations (/tmp, the user's TMPDIR) that unconfined processes of the same user read. The
+      agent presets set it and grant no shared temp directory.
+
+  - id: VER-ZW-020
+    type: verification
+    title: "Presets render, refuse bad variables, and plan on their platform"
+    status: implemented
+    method: test
+    description: >
+      src/presets.rs: every preset names its variables and refuses until filled; rendering fills
+      every placeholder and parses; a missing, unknown, repeated, empty or quote-breaking value
+      is refused. tests/cli.rs init_writes_a_preset_once_and_refuses_bad_input: --list, stdout,
+      --output written once and never overwritten, exit codes. src/macos.rs and src/linux.rs: the
+      agent presets plan (and on macOS generate a policy) on their platform. Not yet covered:
+      the end-to-end agent workload in CI that REQ-ZW-030 asks for.
+    links:
+      - type: verifies
+        target: REQ-ZW-030
+
+  - id: VER-ZW-021
+    type: verification
+    title: "session_tmp gives a fresh writable TMPDIR"
+    status: implemented
+    method: test
+    description: >
+      tests/linux.rs and tests/macos.rs session_tmp_gives_a_fresh_writable_tmpdir: under
+      session_tmp the command's TMPDIR is a zwt- directory, writable and empty at start; the
+      control without session_tmp does not get one.
+    links:
+      - type: verifies
+        target: REQ-ZW-045

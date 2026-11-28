@@ -1,0 +1,52 @@
+# zwinger preset agent-linux: one AI agent session or bench tool on Linux (Landlock ABI >= 3)
+# working in one repository.
+#
+# Landlock filters ports, not addresses, so a Linux profile cannot limit egress to a local
+# proxy yet (zwinger#14): this preset says mode: unfiltered, which confines paths and leaves
+# the network open. Point the agent at a domain-filtering proxy anyway, so its traffic is
+# filtered by cooperation until #14 enforces it.
+#
+# Variables: repo (the repository, writable), state (the agent's own configuration and state
+# directory, writable). Add the toolchains your agent runs to read_if_present. Keep this file
+# outside every write grant, for example in ~/.config/zwinger/ or /etc/zwinger/.
+
+name: agent-linux
+
+read:
+  - "/usr"
+  - "/etc"
+  - "/proc"
+  - "/sys"
+  - "/dev"
+
+read_if_present:
+  - "/bin"
+  - "/sbin"
+  - "/lib"
+  - "/lib64"
+  - "/opt"
+  # /etc/resolv.conf links here on systemd-resolved hosts; Landlock checks the link's target.
+  - "/run/systemd/resolve"
+  - "~/.gitconfig"
+  - "~/.config/git"
+  - "~/.cargo"
+  - "~/.rustup"
+
+deny_read:
+  # Credential files inside the trees granted above.
+  - "~/.cargo/credentials"
+  - "~/.cargo/credentials.toml"
+  - "~/.git-credentials"
+  - "~/.config/git/credentials"
+
+# A fresh private TMPDIR per session, outside every other grant (REQ-ZW-045): shared temp
+# directories are read by unconfined processes of the same user.
+session_tmp: true
+
+write:
+  - "{{repo}}"
+  - "{{state}}"
+  - "/dev/null"
+
+network:
+  mode: unfiltered

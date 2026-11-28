@@ -18,6 +18,20 @@ pub const VAR: &str = "ZWINGER_SOCKET_DIR";
 /// directory, /tmp, /var/tmp. The name is short because a UNIX socket path must fit in 104 bytes
 /// on macOS.
 pub fn session_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
+    fresh_dir(write_grants, "zw", "socket directory")
+}
+
+/// The variable that names the per-session temporary directory for the command.
+pub const TMP_VAR: &str = "TMPDIR";
+
+/// The per-session temporary directory (REQ-ZW-045): created like the socket directory, outside
+/// every write grant, and then granted to the session as its TMPDIR. Outside every other grant,
+/// it is a place no unconfined process of the user looks for files.
+pub fn session_tmp_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
+    fresh_dir(write_grants, "zwt", "session temporary directory")
+}
+
+fn fresh_dir(write_grants: &[PathBuf], prefix: &str, what: &str) -> Result<PathBuf, String> {
     let mut bases: Vec<PathBuf> = Vec::new();
     if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR") {
         bases.push(PathBuf::from(x));
@@ -33,12 +47,12 @@ pub fn session_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
         if granted(&base) {
             continue;
         }
-        match create_in(&base) {
+        match create_in(&base, prefix, what) {
             Ok(d) if !granted(&d) => return Ok(d),
             Ok(d) => {
                 let _ = std::fs::remove_dir(&d);
                 failures.push(format!(
-                    "socket directory {} resolved inside a write grant; refusing",
+                    "{what} {} resolved inside a write grant; refusing",
                     d.display()
                 ));
             }
@@ -46,38 +60,38 @@ pub fn session_dir(write_grants: &[PathBuf]) -> Result<PathBuf, String> {
         }
     }
     Err(if failures.is_empty() {
-        "no place for the session socket directory outside every write grant \
-         ($XDG_RUNTIME_DIR, the temp directory, /tmp and /var/tmp are all granted or missing); \
-         refusing"
-            .to_string()
+        format!(
+            "no place for the {what} outside every write grant ($XDG_RUNTIME_DIR, the temp \
+             directory, /tmp and /var/tmp are all granted or missing); refusing"
+        )
     } else {
         failures.join("; ")
     })
 }
 
-fn create_in(base: &std::path::Path) -> Result<PathBuf, String> {
+fn create_in(base: &std::path::Path, prefix: &str, what: &str) -> Result<PathBuf, String> {
     use std::os::unix::fs::DirBuilderExt;
     let base = base.to_path_buf();
     let pid = std::process::id();
     for n in 0..64u32 {
-        let d = base.join(format!("zw-{pid}-{n}"));
+        let d = base.join(format!("{prefix}-{pid}-{n}"));
         match std::fs::DirBuilder::new().mode(0o700).create(&d) {
             Ok(()) => {
                 return d
                     .canonicalize()
-                    .map_err(|e| format!("socket directory {}: {e}; refusing", d.display()));
+                    .map_err(|e| format!("{what} {}: {e}; refusing", d.display()));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
                 return Err(format!(
-                    "cannot create a socket directory in {}: {e}; refusing",
+                    "cannot create a {what} in {}: {e}; refusing",
                     base.display()
                 ));
             }
         }
     }
     Err(format!(
-        "cannot create a socket directory in {}: 64 names taken; refusing",
+        "cannot create a {what} in {}: 64 names taken; refusing",
         base.display()
     ))
 }
