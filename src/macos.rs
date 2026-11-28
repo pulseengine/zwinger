@@ -1065,7 +1065,6 @@ mod tests {
 
     // ---- policy ----
 
-    // rivet: verifies REQ-ZW-015
     // rivet: verifies REQ-ZW-044
     #[test]
     fn loopback_ports_allow_only_loopback_on_those_ports() {
@@ -1128,6 +1127,7 @@ mod tests {
         assert!(e.contains("overlaps deny_read"), "{e}");
     }
 
+    // rivet: verifies REQ-ZW-015
     #[test]
     fn policy_starts_closed_and_includes_the_base() {
         let t = tree();
