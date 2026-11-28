@@ -352,7 +352,7 @@ deny_read: [/Users/me/.ssh]
 deny_write: [/Users/me/git/demo/.claude/settings.json]
 mach_lookup: [com.apple.server.bluetooth]
 network:
-  allow: [api.anthropic.com, github.com]
+  allow: [model-api.example, github.com]
   allow_local_binding: true
 "#;
 
