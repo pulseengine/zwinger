@@ -18,7 +18,7 @@ zwinger's own code that runs before the `exec`:
 - the profile parser (`src/profile.rs`, on rivet-yaml) and its refusals;
 - the planner and the carve-out and noexec checks (`src/linux.rs`, `src/pathrules.rs`), proved by Kani and, for paths of any length, by Verus;
 - the seccomp program generator, proved by Kani against its classic-BPF model (`bpf_run`, itself trusted);
-- the backends' system calls: `linux::sys` (close_range, seccomp, the Landlock ABI query) and `macos::enforce` (sandbox_init, fcntl). The crate denies unsafe code everywhere else (`#![deny(unsafe_code)]` in `src/lib.rs`), so the compiler holds that boundary;
+- the backends' system calls: `linux::sys` (close_range, seccomp, the Landlock ABI query), `macos::enforce` (sandbox_init, fcntl), and `home_dir` in each backend (getpwuid_r, for a profile's `~/`). The crate denies unsafe code everywhere else (`#![deny(unsafe_code)]` in `src/lib.rs`), so the compiler holds that boundary;
 - the event writer (`src/events.rs`), which runs before confinement and opens one file.
 
 Outside zwinger's code, it trusts:
@@ -34,9 +34,9 @@ Outside zwinger's code, it trusts:
 
 | File | `unsafe` | `extern "C"` | `allow(unsafe_code)` | Verus `external_body` | Verus `assume_specification` | Verus `assume` | `kani::assume` | `kani::unwind` |
 |---|---|---|---|---|---|---|---|---|
-| `src/linux.rs` | 3 | 0 | 1 | 0 | 0 | 0 | 5 | 21 |
-| `src/macos.rs` | 6 | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| **total** | 9 | 1 | 2 | 0 | 0 | 0 | 5 | 21 |
+| `src/linux.rs` | 6 | 0 | 2 | 0 | 0 | 0 | 5 | 21 |
+| `src/macos.rs` | 9 | 1 | 2 | 0 | 0 | 0 | 0 | 0 |
+| **total** | 15 | 1 | 4 | 0 | 0 | 0 | 5 | 21 |
 
 44 crates are compiled into zwinger or run while it is compiled (`cargo tree -e normal --target all`):
 

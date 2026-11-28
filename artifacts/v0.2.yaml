@@ -62,14 +62,29 @@ artifacts:
 
   - id: REQ-ZW-031
     type: requirement
-    title: "Profiles expand ~ and explicitly passed variables, never the ambient environment"
-    status: approved
+    title: "Profiles expand a leading ~/ from the password database, never the environment"
+    status: implemented
     release: v0.2.0
     description: >
-      A path may start with ~ (the invoking user's home) or contain {{name}} for a variable given
-      with --var. An undefined variable is refused (exit 78). Environment variables are not
-      expanded, so the caller's environment cannot widen a grant. check and the startup line show
-      the expanded paths.
+      A path may start with ~/ for the home directory of the user running zwinger, taken from the
+      password database (getpwuid_r), not from $HOME. Nothing else is expanded: $HOME, ~user and a
+      bare ~ (YAML's null) are refused as not absolute, so the caller's environment cannot widen
+      a grant. {{name}} variables are filled only by zwinger init when it writes a profile
+      (REQ-ZW-030), so the file checked and hashed is the file that runs.
+
+  - id: VER-ZW-018
+    type: verification
+    title: "~/ expands from the password database; nothing else expands"
+    status: implemented
+    method: test
+    description: >
+      src/profile.rs a_leading_tilde_is_the_users_home_from_the_password_database: ~/repo and
+      ~/.ssh resolve under home_dir(); ~root/x and $HOME/x are refused; a ~ later in a path stays
+      literal. Run with HOME=/nowhere it still passes, so $HOME is not read. null_paths_fail_closed
+      keeps a bare ~ refused.
+    links:
+      - type: verifies
+        target: REQ-ZW-031
 
   - id: REQ-ZW-032
     type: requirement
