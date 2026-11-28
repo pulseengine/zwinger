@@ -1711,6 +1711,7 @@ mod tests {
             "runner/_work",
             "runner/_tmp",
             "runner/_diag",
+            "runner/_home",
             "runner/.cache",
         ] {
             std::fs::create_dir_all(t.0.join(d)).unwrap();
@@ -1735,8 +1736,8 @@ mod tests {
         let pl = plan(&own).unwrap();
         assert_eq!(
             pl.write.len(),
-            3 + 1,
-            "_work, _tmp, _diag and the one cache present"
+            4 + 1,
+            "_work, _tmp, _diag, _home and the one cache present"
         );
         assert_eq!(pl.skipped.len(), own.write_if_present.len() - 1);
     }
