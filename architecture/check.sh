@@ -53,10 +53,10 @@ for pair in "node:$node" "mesh:$mesh"; do
   else
     echo "ok   $name: 0 errors in $n diagnostics"
   fi
-  commission="$(jq '[.diagnostics[] | select(.message | test("error type .ItemCommission."))] | length' <<<"$json")"
+  commission="$(jq '[.diagnostics[] | select(.data.error_type? == "ItemCommission")] | length' <<<"$json")"
   if [ "$commission" -ne 0 ]; then
     echo "FAIL $name: an ItemCommission propagates, so some fault becomes access the profile did not grant"
-    jq -r '.diagnostics[] | select(.message | test("error type .ItemCommission.")) | "  " + .message' <<<"$json"
+    jq -r '.diagnostics[] | select(.data.error_type? == "ItemCommission") | "  " + .data.origin + " -> " + (.data.downstream | join(", "))' <<<"$json"
     fail=1
   else
     echo "ok   $name: no ItemCommission propagates (fail-closed)"
@@ -64,7 +64,7 @@ for pair in "node:$node" "mesh:$mesh"; do
 done
 
 # The device node's lost event crosses the NICs to warte: session -> probe -> pi_nic -> mac_nic -> warte.
-lost="$(jq '[.diagnostics[] | select(.message | test("^error propagation chain: [4-9][0-9]* components downstream of .session. for error type .ServiceOmission."))] | length' <<<"$mesh")"
+lost="$(jq '[.diagnostics[] | .data? // {} | select(.error_type == "ServiceOmission" and .origin == "Mesh.TwoNodes.devices.session") | select([.downstream[]] | (index("Mesh.TwoNodes.pi_nic") != null) and (index("Mesh.TwoNodes.mac_nic") != null) and (index("Mesh.TwoNodes.warte") != null))] | length' <<<"$mesh")"
 if [ "$lost" -eq 0 ]; then
   echo "FAIL mesh: a lost event no longer reaches warte unflagged; if that gap is closed, update DD-ZW-013 and this check"
   fail=1
@@ -72,7 +72,7 @@ else
   echo "ok   mesh: known gap pinned: a lost event reaches warte as a silent omission"
 fi
 
-bound="$(jq -r '[.diagnostics[] | select(.analysis == "wctt") | .message | capture("WcttBound: stream .e_lan .*end-to-end WCTT (?<ps>[0-9]+) ps") | .ps] | first // empty' <<<"$mesh")"
+bound="$(jq -r '[.diagnostics[] | select(.analysis == "wctt") | .data? // {} | select((.stream // "") | startswith("e_lan ")) | .bound_ps] | first // empty' <<<"$mesh")"
 if [ -z "$bound" ]; then
   echo "FAIL mesh: no WCTT bound for the Pi's event stream (e_lan)"
   fail=1
