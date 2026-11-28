@@ -30,6 +30,11 @@ pub struct Profile {
     /// directories such as `/lib32` or a tool cache only some machines have).
     #[serde(default)]
     pub read_if_present: Vec<PathBuf>,
+    /// Directories the session may list (names only), and every directory beneath them; no
+    /// file in them becomes readable. For programs that check they can list each ancestor of
+    /// their root (REQ-ZW-046).
+    #[serde(default)]
+    pub list: Vec<PathBuf>,
     /// Like `write`, but a path that does not exist is skipped instead of refused.
     #[serde(default)]
     pub write_if_present: Vec<PathBuf>,
@@ -184,6 +189,7 @@ impl Profile {
             &mut p.deny_write,
             &mut p.noexec,
             &mut p.unix_socket_dirs,
+            &mut p.list,
         ] {
             for entry in list.iter_mut() {
                 let expanded =
@@ -197,7 +203,7 @@ impl Profile {
     }
 
     /// The path lists by field name, in a fixed order.
-    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 8] {
+    pub fn path_fields(&self) -> [(&'static str, &[PathBuf]); 9] {
         [
             ("read", &self.read),
             ("write", &self.write),
@@ -207,6 +213,7 @@ impl Profile {
             ("deny_write", &self.deny_write),
             ("noexec", &self.noexec),
             ("unix_socket_dirs", &self.unix_socket_dirs),
+            ("list", &self.list),
         ]
     }
 
