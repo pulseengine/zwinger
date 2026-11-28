@@ -17,7 +17,7 @@ fn agent_fragment_allows_exactly_the_hosts_its_egress_reaches() {
     let p = fragment("agent");
     assert_eq!(p.name, "agent");
     assert_eq!(p.network.mode, NetworkMode::None);
-    assert_eq!(p.network.allow, ["api.anthropic.com", "github.com"]);
+    assert_eq!(p.network.allow, ["model-api.example", "git.example"]);
     assert!(!p.network.allow_local_binding);
     assert_eq!(p.network.unix_sockets, UnixSockets::Confined);
     // A fragment grants no path: only the network section is generated.

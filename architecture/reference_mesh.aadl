@@ -112,8 +112,8 @@ public
       g_forge  : port agent.egress -> forge.requests;
     properties
       Deployment_Properties::Actual_Connection_Binding => (reference (lan)) applies to e_lan;
-      Zwinger_Profile::Host => "api.anthropic.com" applies to model_api;
-      Zwinger_Profile::Host => "github.com" applies to forge;
+      Zwinger_Profile::Host => "model-api.example" applies to model_api;
+      Zwinger_Profile::Host => "git.example" applies to forge;
       Zwinger_Profile::Profile_Name => "agent" applies to agent.session;
       Zwinger_Profile::Network_Mode => confined applies to agent.session;
       Zwinger_Profile::Profile_Name => "devices" applies to devices.session;

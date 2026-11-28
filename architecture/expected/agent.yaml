@@ -4,6 +4,6 @@
 name: agent
 network:
   mode: none
-  allow: [api.anthropic.com, github.com]
+  allow: [model-api.example, git.example]
   allow_local_binding: false
   unix_sockets: confined
