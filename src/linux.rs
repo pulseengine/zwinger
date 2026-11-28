@@ -1698,6 +1698,24 @@ mod tests {
         assert!(explain(&open, &pl, "http:x")[0].starts_with("path http:x"));
     }
 
+    // rivet: verifies REQ-ZW-030
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_agent_linux_preset_plans() {
+        let t = tree();
+        std::fs::create_dir_all(t.0.join("repo")).unwrap();
+        std::fs::create_dir_all(t.0.join("state")).unwrap();
+        let s = |d: &str| t.0.join(d).to_str().unwrap().to_string();
+        let text = crate::presets::render(
+            "agent-linux",
+            &[("repo".into(), s("repo")), ("state".into(), s("state"))],
+        )
+        .unwrap();
+        let p = Profile::parse(Path::new("agent-linux.yaml"), &text).unwrap();
+        let pl = plan(&p).unwrap();
+        assert!(pl.write.iter().any(|g| g.resolved.ends_with("repo")));
+    }
+
     // rivet: verifies REQ-ZW-011
     #[test]
     fn runner_template_refuses_until_substituted_then_plans() {

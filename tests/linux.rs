@@ -932,3 +932,29 @@ fn a_runner_starts_under_the_github_runner_profile() {
         String::from_utf8_lossy(&o.stderr)
     );
 }
+
+// rivet: verifies REQ-ZW-045
+#[test]
+fn session_tmp_gives_a_fresh_writable_tmpdir() {
+    let script = r#"case "$TMPDIR" in */zwt-*) ;; *) exit 3;; esac
+touch "$TMPDIR/f" || exit 4
+[ "$(ls -A "$TMPDIR")" = f ] || exit 5
+exit 0"#;
+    let sc = Scene::new("session_tmp: true\n");
+    let o = sc.run(&["/bin/sh", "-c", script]);
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "3 TMPDIR not the session directory, 4 not writable, 5 not fresh: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    // Control: without session_tmp, TMPDIR is the caller's and the session directory is absent.
+    let sc = Scene::new("");
+    let o = sc.run(&["/bin/sh", "-c", script]);
+    assert_eq!(
+        o.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}

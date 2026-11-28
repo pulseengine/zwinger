@@ -236,3 +236,53 @@ fn env_keep_naming_a_variable_zwinger_does_not_remove_is_refused() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("env_keep: \"PATH\""), "{err}");
 }
+
+// rivet: verifies REQ-ZW-030
+#[test]
+fn init_writes_a_preset_once_and_refuses_bad_input() {
+    let o = zwinger(&["init", "--list"]);
+    assert!(o.status.success());
+    assert!(String::from_utf8_lossy(&o.stdout).contains("github-runner: --var home"));
+    let o = zwinger(&[
+        "init",
+        "--preset",
+        "github-runner",
+        "--var",
+        "home=/var/lib/r1",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = String::from_utf8(o.stdout).unwrap();
+    assert!(
+        text.contains("\"/var/lib/r1/_work\"") && !text.contains("{{"),
+        "{text}"
+    );
+    // --output: written once, never overwritten.
+    let out = std::env::temp_dir().join(format!("zwinger-init-{}.yaml", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let args = |p: &str| {
+        zwinger(&[
+            "init",
+            "--preset",
+            "github-runner",
+            "--var",
+            "home=/var/lib/r1",
+            "--output",
+            p,
+        ])
+    };
+    assert!(args(out.to_str().unwrap()).status.success());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), text);
+    let again = args(out.to_str().unwrap());
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(again.status.code(), Some(78));
+    assert!(String::from_utf8_lossy(&again.stderr).contains("never overwrites"));
+    // Missing preset, missing variable, unknown argument.
+    assert_eq!(zwinger(&["init"]).status.code(), Some(78));
+    assert_eq!(
+        zwinger(&["init", "--preset", "github-runner"])
+            .status
+            .code(),
+        Some(78)
+    );
+    assert_eq!(zwinger(&["init", "--bogus"]).status.code(), Some(2));
+}

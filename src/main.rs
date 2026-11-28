@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use zwinger::events::{self, Event};
 use zwinger::{EXIT_REFUSED, profile::Profile};
 
-const USAGE: &str = "usage: zwinger check PROFILE\n       zwinger explain PROFILE PATH|tcp:PORT|udp:PORT\n       zwinger run PROFILE -- COMMAND [ARG...]";
+const USAGE: &str = "usage: zwinger init --preset NAME [--var KEY=VALUE]... [--output FILE]\n       zwinger init --list\n       zwinger check PROFILE\n       zwinger explain PROFILE PATH|tcp:PORT|udp:PORT\n       zwinger run PROFILE -- COMMAND [ARG...]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -40,6 +40,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("init") => init(&args[1..]),
         Some("--version" | "-V") => {
             println!("zwinger {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -86,6 +87,31 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
             return refuse(&e);
         }
     };
+    // The per-session temporary directory (REQ-ZW-045): created outside every write grant,
+    // then granted, so the session's temp files are not where unconfined processes look.
+    let session_tmp = if p.session_tmp {
+        match zwinger::sockets::session_tmp_dir(&grants) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+                return refuse(&e);
+            }
+        }
+    } else {
+        None
+    };
+    let with_tmp;
+    let p = match &session_tmp {
+        Some(d) => {
+            with_tmp = {
+                let mut q = p.clone();
+                q.write.push(d.clone());
+                q
+            };
+            &with_tmp
+        }
+        None => p,
+    };
     let (enf, plan) = match zwinger::linux::confine(p, &socket_dir) {
         Ok(c) => c,
         Err(e) => {
@@ -122,6 +148,9 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
     let removed = scrub_env(&mut command, &p.env_keep);
     eprintln!("{}{removed}", enf.summary(&p.name, &plan));
     // Only returns on failure; the session is already confined either way.
+    if let Some(d) = &session_tmp {
+        command.env(zwinger::sockets::TMP_VAR, d);
+    }
     let err = command
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
@@ -215,6 +244,31 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
             return refuse(&e);
         }
     };
+    // The per-session temporary directory (REQ-ZW-045): created outside every write grant,
+    // then granted, so the session's temp files are not where unconfined processes look.
+    let session_tmp = if p.session_tmp {
+        match zwinger::sockets::session_tmp_dir(&grants) {
+            Ok(d) => Some(d),
+            Err(e) => {
+                events::end(pending, &Event::refused(Some(p.name.clone()), sha, "path"));
+                return refuse(&e);
+            }
+        }
+    } else {
+        None
+    };
+    let with_tmp;
+    let p = match &session_tmp {
+        Some(d) => {
+            with_tmp = {
+                let mut q = p.clone();
+                q.write.push(d.clone());
+                q
+            };
+            &with_tmp
+        }
+        None => p,
+    };
     let plan = match zwinger::macos::confine(p, &socket_dir) {
         Ok(plan) => plan,
         Err(e) => {
@@ -252,6 +306,9 @@ fn run(opened: &zwinger::inputs::Opened, path: &Path, cmd: &str, args: &[String]
     let removed = scrub_env(&mut command, &p.env_keep);
     eprintln!("{}{removed}", zwinger::macos::summary(p, &plan));
     // Only returns on failure; the session is already confined either way.
+    if let Some(d) = &session_tmp {
+        command.env(zwinger::sockets::TMP_VAR, d);
+    }
     let err = command
         .args(args)
         .env("ZWINGER_PROFILE", &p.name)
@@ -311,6 +368,68 @@ fn warn_existing_sockets(write_trees: Vec<std::path::PathBuf>) {
              unless its directory is in unix_socket_dirs",
             s.display()
         );
+    }
+}
+
+/// `init`: write a profile from a built-in preset (REQ-ZW-030), to stdout or to a new file.
+fn init(args: &[String]) -> ExitCode {
+    if args == ["--list"] {
+        for (name, text) in zwinger::presets::PRESETS {
+            let vars: Vec<String> = zwinger::presets::placeholders(text).into_iter().collect();
+            println!("{name}: --var {}", vars.join(" --var "));
+        }
+        return ExitCode::SUCCESS;
+    }
+    let (mut preset, mut output, mut vars) = (None, None, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let value = |it: &mut std::slice::Iter<String>| it.next().cloned();
+        match a.as_str() {
+            "--preset" => preset = value(&mut it),
+            "--output" => output = value(&mut it),
+            "--var" => match value(&mut it).map(|v| zwinger::presets::parse_var(&v)) {
+                Some(Ok(kv)) => vars.push(kv),
+                Some(Err(e)) => return refuse(&e),
+                None => return refuse("--var needs KEY=VALUE"),
+            },
+            other => {
+                eprintln!("zwinger: init: unknown argument {other:?}\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let Some(preset) = preset else {
+        return refuse("init needs --preset NAME (zwinger init --list shows the presets)");
+    };
+    let text = match zwinger::presets::render(&preset, &vars) {
+        Ok(t) => t,
+        Err(e) => return refuse(&e),
+    };
+    match output {
+        None => {
+            print!("{text}");
+            ExitCode::SUCCESS
+        }
+        Some(path) => {
+            use std::io::Write;
+            let written = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .and_then(|mut f| f.write_all(text.as_bytes()));
+            match written {
+                Ok(()) => {
+                    eprintln!(
+                        "zwinger: wrote {path} from preset {preset}; next: zwinger check {path}"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => refuse(&format!(
+                    "{path} exists; init never overwrites a profile, so remove it or pick another path"
+                )),
+                Err(e) => refuse(&format!("cannot write {path}: {e}")),
+            }
+        }
     }
 }
 

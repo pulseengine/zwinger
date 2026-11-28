@@ -66,6 +66,11 @@ pub struct Profile {
     /// scrubbed variable is removed before exec.
     #[serde(default)]
     pub env_keep: Vec<String>,
+    /// `run` creates a fresh private temporary directory outside every write grant, grants it,
+    /// and sets TMPDIR to it, so files the session puts in temp are not where unconfined
+    /// processes of the same user look (REQ-ZW-045).
+    #[serde(default)]
+    pub session_tmp: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

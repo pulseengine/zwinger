@@ -1127,6 +1127,29 @@ mod tests {
         assert!(e.contains("overlaps deny_read"), "{e}");
     }
 
+    // rivet: verifies REQ-ZW-030
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_agent_macos_preset_plans_and_generates_a_policy() {
+        let t = tree();
+        std::fs::create_dir_all(t.0.join("repo")).unwrap();
+        std::fs::create_dir_all(t.0.join("state")).unwrap();
+        let text = crate::presets::render(
+            "agent-macos",
+            &[
+                ("repo".into(), at(&t, "repo")),
+                ("state".into(), at(&t, "state")),
+                ("proxy_port".into(), "3128".into()),
+            ],
+        )
+        .unwrap();
+        let p = Profile::parse(Path::new("agent-macos.yaml"), &text).unwrap();
+        let pl = plan(&p).unwrap();
+        let pol = policy(&p, &pl).unwrap();
+        assert!(pol.contains("(remote tcp \"localhost:3128\")"), "{pol}");
+        assert!(summary(&p, &pl).contains("network: none except loopback ports 3128"));
+    }
+
     // rivet: verifies REQ-ZW-015
     #[test]
     fn policy_starts_closed_and_includes_the_base() {

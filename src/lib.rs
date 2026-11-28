@@ -19,6 +19,7 @@ pub mod inputs;
 pub mod linux;
 pub mod macos;
 pub mod pathrules;
+pub mod presets;
 pub mod profile;
 pub mod sockets;
 
