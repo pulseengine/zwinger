@@ -72,7 +72,7 @@ else
   echo "ok   mesh: known gap pinned: a lost event reaches warte as a silent omission"
 fi
 
-bound="$(jq -r '[.diagnostics[] | select(.analysis == "wctt") | .data? // {} | select((.stream // "") | startswith("e_lan ")) | .bound_ps] | first // empty' <<<"$mesh")"
+bound="$(jq -r '[.diagnostics[] | select(.analysis == "wctt") | .data? // {} | select(.stream == "Mesh.TwoNodes.e_lan" and .source == "Mesh.TwoNodes.pi_nic" and .destination == "Mesh.TwoNodes.mac_nic") | .bound_ps] | first // empty' <<<"$mesh")"
 if [ -z "$bound" ]; then
   echo "FAIL mesh: no WCTT bound for the Pi's event stream (e_lan)"
   fail=1
