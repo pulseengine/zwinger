@@ -286,6 +286,48 @@ fn carve_outs_inside_a_write_tree_are_refused() {
     refused("noexec: [\"@/w/a\"]\n");
 }
 
+// rivet: verifies REQ-ZW-044
+#[test]
+fn loopback_ports_connect_only_on_loopback() {
+    let listed = TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = listed.local_addr().unwrap().port();
+    let other = TcpListener::bind("127.0.0.1:0").unwrap();
+    let other_addr = other.local_addr().unwrap().to_string();
+    // 443 is listed too, to show that another host on a listed port is refused.
+    let sc = Scene::new(&format!(
+        "network:\n  allow_loopback_ports: [{port}, 443]\n"
+    ));
+    assert_eq!(
+        probe(&sc, "tcp_connect", &format!("127.0.0.1:{port}")),
+        Some(0)
+    );
+    // IPv6 loopback on the listed port: the listener is IPv4-only, so the connect is refused by
+    // the peer (ECONNREFUSED), not by the sandbox.
+    assert_ne!(
+        probe(&sc, "tcp_connect", &format!("[::1]:{port}")),
+        Some(EPERM)
+    );
+    // An unlisted loopback port.
+    assert_eq!(
+        probe_unconfined("tcp_connect", &other_addr),
+        Some(0),
+        "control"
+    );
+    assert_eq!(probe(&sc, "tcp_connect", &other_addr), Some(EPERM));
+    // Seatbelt's localhost matches this host's own addresses, not only loopback (measured): the
+    // listed port on the host's own non-loopback address connects. Asserted so a change is
+    // noticed; docs/profile.md states it. Found without sending anything.
+    let u = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    u.connect("192.0.2.1:9").unwrap();
+    let ip = u.local_addr().unwrap().ip();
+    assert!(!ip.is_loopback(), "{ip}");
+    assert_eq!(probe(&sc, "tcp_connect", &format!("{ip}:{port}")), Some(0));
+    // Another host on a listed port is refused. The control needs this runner's internet.
+    let remote = "1.1.1.1:443";
+    assert_eq!(probe_unconfined("tcp_connect", remote), Some(0), "control");
+    assert_eq!(probe(&sc, "tcp_connect", remote), Some(EPERM));
+}
+
 // rivet: verifies REQ-ZW-015
 #[test]
 fn tcp_connect_is_refused_under_mode_none() {

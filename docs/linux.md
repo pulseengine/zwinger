@@ -6,7 +6,7 @@
 - a granted path does not exist, or resolves through a symlink into a denied tree, or no longer names the object the plan checked when its rule is installed;
 - a `deny_read` lies inside a granted tree, or a `deny_write` inside a write tree, because Landlock is an allow list and cannot carve a subtree out of a granted one;
 - a `noexec` tree lies inside a wider grant, whose execute right would still cover it;
-- `network.allow` names hosts or `allow_local_binding` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.
+- `network.allow` names hosts, or `allow_local_binding` or `allow_loopback_ports` is set, because Landlock filters ports, not hosts or addresses, and there is no filtering proxy yet.
 
 No egress is enforced by seccomp (every socket family except `AF_UNIX`, and io_uring) and by Landlock's TCP (ABI 4) and UDP (ABI 10) rules where the kernel has them. `AF_UNIX` sockets are allowed only when Landlock confines them (ABI 9); on older kernels `socket(AF_UNIX)` is refused and `socketpair(2)` still works. `ioctl` with `TIOCSTI` or `TIOCLINUX` is refused, so the session cannot push input into the caller's terminal for the unconfined shell to run. `add_key`, `request_key` and `keyctl` are refused, so the session cannot use the kernel keyrings, which hold secrets no path rule covers.
 

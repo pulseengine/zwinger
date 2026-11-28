@@ -242,3 +242,35 @@ artifacts:
     links:
       - type: verifies
         target: REQ-ZW-028
+
+      - type: satisfies
+        target: REQ-ZW-044
+
+  - id: REQ-ZW-044
+    type: requirement
+    title: "macOS: under mode none, the session may connect to listed ports on this host only"
+    status: implemented
+    release: v0.2.0
+    description: >
+      network.allow_loopback_ports lists TCP ports the session may connect to on the loopback
+      address while mode is none, for a proxy or local service outside the session (#65). Seatbelt
+      matches this host by its own addresses, not only loopback, so the listed ports are reachable
+      on any of them; any other host is refused on every port. Linux refuses the field (exit 78) because Landlock filters ports, not addresses.
+      Port 0, duplicates and the field with mode unfiltered are refused when the profile loads.
+
+  - id: VER-ZW-016
+    type: verification
+    title: "Loopback ports: parser, both backends, end to end on macOS"
+    status: implemented
+    method: test
+    description: >
+      src/profile.rs loopback_ports_are_checked; src/linux.rs loopback_ports_refuse_on_linux;
+      src/macos.rs loopback_ports_allow_only_loopback_on_those_ports (policy and summary);
+      tests/macos.rs loopback_ports_connect_only_on_loopback: the listed port connects on
+      127.0.0.1, is not refused by the sandbox on ::1, and connects on the host's own
+      non-loopback address (asserted, Seatbelt's localhost semantics); an unlisted loopback port
+      and another host on a listed port (1.1.1.1:443) fail with EPERM, each with an unconfined
+      control.
+    links:
+      - type: verifies
+        target: REQ-ZW-044
