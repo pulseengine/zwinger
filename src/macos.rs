@@ -1127,8 +1127,8 @@ mod tests {
         assert!(e.contains("overlaps deny_read"), "{e}");
     }
 
-    // rivet: verifies REQ-ZW-015
     // rivet: verifies REQ-ZW-030
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_agent_macos_preset_plans_and_generates_a_policy() {
         let t = tree();
@@ -1150,6 +1150,7 @@ mod tests {
         assert!(summary(&p, &pl).contains("network: none except loopback ports 3128"));
     }
 
+    // rivet: verifies REQ-ZW-015
     #[test]
     fn policy_starts_closed_and_includes_the_base() {
         let t = tree();

@@ -30,8 +30,15 @@ read_if_present:
   - "/opt/homebrew"
   - "/Applications"
   - "~/.gitconfig"
-  - "~/.config/git"
-  - "~/.cargo"
+  # Only the parts of ~/.cargo and ~/.config/git that tools read, so the credential files there
+  # are never inside a grant (Landlock cannot carve a denied path out of a granted tree).
+  - "~/.config/git/config"
+  - "~/.config/git/ignore"
+  - "~/.config/git/attributes"
+  - "~/.cargo/bin"
+  - "~/.cargo/registry"
+  - "~/.cargo/git"
+  - "~/.cargo/config.toml"
   - "~/.rustup"
 
 # A fresh private TMPDIR per session, outside every other grant (REQ-ZW-045): shared temp
@@ -48,7 +55,7 @@ deny_read:
   - "~/.aws"
   - "~/.gnupg"
   - "~/Library/Keychains"
-  # Credential files inside the trees granted above.
+  # Credential files next to what is granted above; none lies inside a grant.
   - "~/.cargo/credentials"
   - "~/.cargo/credentials.toml"
   - "~/.git-credentials"
